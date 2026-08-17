@@ -22,14 +22,17 @@ En el ESTUDIO eso es exactamente lo prohibido:
   exige el cliente activo en sesión — un endpoint sin cliente activo no
   devuelve datos. El filtro va en el servidor, no en el front.
 
-## 2. La decisión de entidades: HÍBRIDA (padrón transversal, relación por cliente)
+## 2. La decisión de entidades: HÍBRIDA ✅ CONFIRMADA (Juan, 2026-08-17)
 
 La pregunta era: ¿la base de entidades (proveedores/clientes de cada cliente)
 es transversal o por cliente? Porque si es transversal, varios clientes del
 estudio "comparten" proveedores.
 
-**Decisión propuesta: partir la entidad en sus dos mitades, que son cosas
-distintas:**
+**Decisión de Juan, en sus palabras: "la base con CUIT es UNA, pero cliente
+tiene relación con proveedor 3 y cliente 7 — se refieren al maestro."**
+O sea: maestro único por CUIT; la relación de cada cliente es una fila propia
+que APUNTA al maestro, nunca una copia de la ficha. Esquema de tablas bajado
+a `servidor/esquema.sql`. Las dos mitades:
 
 ### 2a. `padron` — transversal (datos PÚBLICOS por CUIT)
 
