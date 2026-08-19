@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERBEN ESTUDIO</title>
+<style>
+:root{
+  --bg:#0b1220; --bg2:#111a2e; --bg3:#18233c; --hover:#22304f;
+  --bor:#22304f; --bor2:#18233c;
+  --txt:#e6edf7; --txt2:#b9c6db; --mut:#7f8ea8;
+  --ac:#0ea678; --ac2:#14c48e; --warn:#e0a53a; --bad:#e05a4a;
+}
+html.light{
+  --bg:#f4f7fb; --bg2:#fff; --bg3:#eef3f9; --hover:#e2eaf4;
+  --bor:#cfdbe9; --bor2:#e6edf5;
+  --txt:#0d1a2b; --txt2:#33465e; --mut:#66788f;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+a{color:inherit;text-decoration:none}
+button,input,select,textarea{font:inherit;color:inherit}
+
+/* ── marca ── */
+.logo{display:flex;align-items:center;gap:10px}
+.logo-mark{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--ac),#0b7f5c);
+  display:grid;place-items:center;font-weight:800;color:#fff;font-size:15px;letter-spacing:-.5px;flex-shrink:0}
+.logo-txt{line-height:1}
+.logo-txt b{font-size:16px;font-weight:800;letter-spacing:.01em}
+.logo-txt span{display:block;font-size:9px;letter-spacing:.3em;color:var(--mut);margin-top:3px;text-transform:uppercase}
+
+/* ── portada: elegir cliente ── */
+#portada{min-height:100vh;display:grid;place-items:center;padding:32px 16px}
+.portada-box{width:100%;max-width:640px}
+.portada-box h1{font-size:30px;font-weight:800;margin:22px 0 6px}
+.portada-box p{color:var(--txt2);margin-bottom:24px}
+.aviso{background:var(--bg2);border:1px solid var(--bor);border-left:3px solid var(--ac);
+  border-radius:8px;padding:12px 14px;font-size:12.5px;color:var(--txt2);margin-bottom:22px}
+.cli-card{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--bg2);
+  border:1px solid var(--bor);border-radius:10px;padding:16px 18px;margin-bottom:10px;cursor:pointer;transition:.15s}
+.cli-card:hover{border-color:var(--ac);background:var(--hover);transform:translateX(3px)}
+.cli-card b{font-size:16px}
+.cli-card small{display:block;color:var(--mut);font-size:12px;margin-top:3px}
+.chip{display:inline-block;background:var(--bg3);border:1px solid var(--bor);border-radius:20px;
+  padding:2px 10px;font-size:11px;color:var(--txt2)}
+
+/* ── shell ── */
+header{background:var(--bg2);border-bottom:1px solid var(--bor2);padding:10px 16px;position:sticky;top:0;z-index:50}
+.hd{max-width:1500px;margin:0 auto;display:flex;align-items:center;gap:16px;justify-content:space-between}
+.cli-activo{display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid var(--bor);
+  border-radius:8px;padding:6px 12px;cursor:pointer;transition:.15s}
+.cli-activo:hover{border-color:var(--ac)}
+.cli-activo b{font-size:13px}
+.cli-activo small{color:var(--mut);font-size:11px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ac2);flex-shrink:0}
+nav{background:var(--bg2);border-bottom:1px solid var(--bor2);padding:0 16px;overflow-x:auto}
+.nav{max-width:1500px;margin:0 auto;display:flex;gap:2px}
+.nav a{padding:11px 14px;font-size:13px;color:var(--mut);border-bottom:2px solid transparent;white-space:nowrap}
+.nav a:hover{color:var(--txt)}
+.nav a.on{color:var(--ac2);border-bottom-color:var(--ac)}
+main{max-width:1500px;margin:0 auto;padding:22px 16px 60px}
+h2{font-size:20px;font-weight:700;margin-bottom:4px}
+.sub{color:var(--mut);font-size:13px;margin-bottom:18px}
+
+/* ── piezas ── */
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(215px,1fr))}
+.card{background:var(--bg2);border:1px solid var(--bor);border-radius:10px;padding:15px}
+.card .k{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em}
+.card .v{font-size:23px;font-weight:700;margin-top:6px}
+.card .v.sm{font-size:16px}
+.panel{background:var(--bg2);border:1px solid var(--bor);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.panel-h{padding:12px 15px;border-bottom:1px solid var(--bor2);display:flex;align-items:center;
+  justify-content:space-between;gap:10px;flex-wrap:wrap}
+.panel-h b{font-size:14px}
+.panel-b{padding:15px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:9px 12px;font-size:11px;color:var(--mut);text-transform:uppercase;
+  letter-spacing:.05em;border-bottom:1px solid var(--bor);white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid var(--bor2)}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--bg3)}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tabla-wrap{overflow-x:auto}
+button{background:var(--ac);color:#fff;border:0;border-radius:7px;padding:8px 14px;font-size:13px;
+  font-weight:600;cursor:pointer;transition:.15s}
+button:hover{background:var(--ac2)}
+button.g{background:var(--bg3);color:var(--txt2);border:1px solid var(--bor)}
+button.g:hover{background:var(--hover);color:var(--txt)}
+button.xs{padding:4px 9px;font-size:11.5px;font-weight:500}
+button:disabled{opacity:.45;cursor:not-allowed}
+input,select,textarea{background:var(--bg);border:1px solid var(--bor);border-radius:7px;padding:8px 10px;width:100%}
+input:focus,select:focus,textarea:focus{outline:0;border-color:var(--ac)}
+label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+.f{display:grid;gap:11px;grid-template-columns:repeat(auto-fit,minmax(155px,1fr))}
+.f .full{grid-column:1/-1}
+.badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:600}
+.b-ok{background:rgba(14,166,120,.16);color:var(--ac2)}
+.b-warn{background:rgba(224,165,58,.16);color:var(--warn)}
+.b-bad{background:rgba(224,90,74,.16);color:var(--bad)}
+.b-mut{background:var(--bg3);color:var(--mut)}
+.vacio{padding:34px 16px;text-align:center;color:var(--mut);font-size:13px}
+.tabs{display:flex;gap:2px;margin-bottom:14px;border-bottom:1px solid var(--bor)}
+.tabs button{background:none;color:var(--mut);border:0;border-bottom:2px solid transparent;
+  border-radius:0;padding:8px 14px;font-weight:500}
+.tabs button.on{color:var(--ac2);border-bottom-color:var(--ac)}
+.pos{color:var(--ac2)} .neg{color:var(--bad)}
+.mini{font-size:11.5px;color:var(--mut)}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--bg3);
+  border:1px solid var(--ac);border-radius:8px;padding:11px 18px;font-size:13px;z-index:200;display:none;
+  box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw}
+.hide{display:none!important}
+.row-act{display:flex;gap:5px;flex-wrap:wrap}
+.cand{background:var(--bg3);border:1px solid var(--bor);border-radius:7px;padding:8px 11px;margin-top:6px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
+</style>
+</head>
+<body>
+
+<!-- ══ PORTADA: elegir cliente ══ -->
+<div id="portada">
+  <div class="portada-box">
+    <div class="logo">
+      <div class="logo-mark">EE</div>
+      <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Contable</span></div>
+    </div>
+    <h1>¿Con qué cliente trabajamos?</h1>
+    <p>Elegí uno para entrar. Todos los módulos van a mostrar solo sus datos.</p>
+    <div class="aviso">
+      Los clientes están aislados: no hay vistas que mezclen dos. Para cambiar
+      de cliente se vuelve a esta pantalla.
+    </div>
+    <div id="lista-clientes"></div>
+    <div class="panel" style="margin-top:20px">
+      <div class="panel-h"><b>Alta de cliente</b>
+        <button class="g xs" onclick="toggle('#alta-cli')">Mostrar</button></div>
+      <div class="panel-b hide" id="alta-cli">
+        <div class="f">
+          <div><label>CUIT</label><input id="nc-cuit" placeholder="20216598998"></div>
+          <div><label>Alias</label><input id="nc-alias" placeholder="RODRIGUEZ"></div>
+          <div class="full"><label>Razón social</label><input id="nc-rs"></div>
+          <div><label>Condición IVA</label>
+            <select id="nc-iva"><option value="RI">Resp. Inscripto</option>
+              <option value="monotributo">Monotributo</option><option value="exento">Exento</option></select></div>
+          <div style="display:flex;align-items:flex-end"><button onclick="altaCliente()">Crear cliente</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ APP ══ -->
+<div id="app" class="hide">
+  <header><div class="hd">
+    <div class="logo">
+      <div class="logo-mark">EE</div>
+      <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Contable</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="g xs" onclick="tema()">Tema</button>
+      <div class="cli-activo" onclick="salirCliente()" title="Cambiar de cliente">
+        <span class="dot"></span>
+        <div><b id="hd-cli"></b><small id="hd-cuit"></small></div>
+        <span style="color:var(--mut);font-size:11px">cambiar</span>
+      </div>
+    </div>
+  </div></header>
+  <nav><div class="nav" id="nav"></div></nav>
+  <main id="vista"></main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+let CLI = null, ACT = [], ENT = [], CTAS = [];
+
+const MODULOS = [
+  ['tablero',      'Tablero'],
+  ['facturas',     'Facturas'],
+  ['impuestos',    'Impuestos'],
+  ['iibb',         'DJ IIBB'],
+  ['bancos',       'Bancos'],
+  ['cheques',      'Cheques'],
+  ['pagos',        'Pagos'],
+  ['conciliacion', 'Conciliación'],
+  ['entidades',    'Entidades'],
+];
+
+/* ── utilidades ── */
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const plata = n => (n == null ? '—' : (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('es-AR',
+  {minimumFractionDigits:2, maximumFractionDigits:2}));
+const fecha = f => !f ? '—' : f.slice(0,10).split('-').reverse().join('/');
+const hoy = () => new Date().toISOString().slice(0,10);
+const periodoHoy = () => { const d = new Date(); return String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear(); };
+function toggle(sel){ $(sel).classList.toggle('hide'); }
+function tema(){ document.documentElement.classList.toggle('light');
+  localStorage.setItem('ee-tema', document.documentElement.className); }
+function toast(msg, malo){
+  const t = $('#toast'); t.textContent = msg;
+  t.style.borderColor = malo ? 'var(--bad)' : 'var(--ac)';
+  t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display='none', 3800);
+}
+async function api(ruta, opts){
+  const sep = ruta.includes('?') ? '&' : '?';
+  const url = API + ruta + (CLI && ruta.startsWith('/api/c/') ? sep + 'cliente=' + encodeURIComponent(CLI.alias) : '');
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({error:'respuesta ilegible del servidor'}));
+  if (!r.ok) throw new Error(j.error || ('error ' + r.status));
+  return j;
+}
+const post = (ruta, cuerpo) => api(ruta, {method:'POST', headers:{'Content-Type':'application/json'},
+  body: JSON.stringify(cuerpo)});
+const val = id => ($('#'+id)?.value ?? '').trim();
+const num = id => { const v = val(id); return v === '' ? null : parseFloat(v.replace(',','.')); };
+
+/* ── portada ── */
+async function cargarClientes(){
+  try{
+    const cs = await api('/api/clientes');
+    $('#lista-clientes').innerHTML = cs.length ? cs.map(c => `
+      <div class="cli-card" onclick='entrar(${JSON.stringify(c)})'>
+        <div><b>${esc(c.razon_social)}</b>
+          <small>${esc(c.alias)} · CUIT ${esc(c.cuit)}</small></div>
+        <span class="chip">${esc(c.jurisdicciones || 'sin jurisdicción')}</span>
+      </div>`).join('')
+      : '<div class="vacio">Todavía no hay clientes. Cargá el primero abajo.</div>';
+  }catch(e){ $('#lista-clientes').innerHTML =
+    `<div class="vacio">No pude hablar con el servidor.<br><span class="mini">${esc(e.message)}</span></div>`; }
+}
+async function altaCliente(){
+  try{
+    await post('/api/clientes', {cuit: val('nc-cuit'), alias: val('nc-alias'),
+      razon_social: val('nc-rs'), condicion_iva: val('nc-iva')});
+    toast('Cliente creado'); ['nc-cuit','nc-alias','nc-rs'].forEach(i => $('#'+i).value='');
+    cargarClientes();
+  }catch(e){ toast(e.message, true); }
+}
+function entrar(c){
+  CLI = c; sessionStorage.setItem('ee-cli', JSON.stringify(c));
+  $('#portada').classList.add('hide'); $('#app').classList.remove('hide');
+  $('#hd-cli').textContent = c.razon_social; $('#hd-cuit').textContent = c.alias + ' · ' + c.cuit;
+  $('#nav').innerHTML = MODULOS.map(([k,t]) => `<a href="#${k}" id="nav-${k}">${t}</a>`).join('');
+  precargar().then(() => { if (!location.hash) location.hash = '#tablero'; else router(); });
+}
+function salirCliente(){
+  CLI = null; sessionStorage.removeItem('ee-cli'); location.hash = '';
+  $('#app').classList.add('hide'); $('#portada').classList.remove('hide'); cargarClientes();
+}
+async function precargar(){
+  [ACT, ENT, CTAS] = await Promise.all([
+    api('/api/c/actividades').catch(()=>[]),
+    api('/api/c/entidades').catch(()=>[]),
+    api('/api/c/cuentas').catch(()=>[]),
+  ]);
+}
+const optEnt = (f = () => true) => ENT.filter(f)
+  .map(e => `<option value="${e.id}">${esc(e.razon_social)}</option>`).join('');
+const optCta = () => CTAS.map(c =>
+  `<option value="${c.id}">${esc(c.banco)}${c.numero ? ' · ' + esc(c.numero) : ''}</option>`).join('');
+
+/* ── router ── */
+window.addEventListener('hashchange', router);
+function router(){
+  if (!CLI) return;
+  const v = (location.hash || '#tablero').slice(1);
+  MODULOS.forEach(([k]) => $('#nav-'+k)?.classList.toggle('on', k === v));
+  ({tablero:vTablero, facturas:vFacturas, impuestos:vImpuestos, iibb:vIIBB, bancos:vBancos,
+    cheques:vCheques, pagos:vPagos, conciliacion:vConciliacion, entidades:vEntidades}[v] || vTablero)();
+}
+const pintar = h => { $('#vista').innerHTML = h; };
+const cargando = t => pintar(`<h2>${t}</h2><div class="vacio">Cargando…</div>`);
+
+/* ══ TABLERO ══ */
+async function vTablero(){
+  cargando('Tablero');
+  const r = await api('/api/c/resumen');
+  const p = r.impuestos_portal;
+  pintar(`
+    <h2>${esc(r.cliente.razon_social)}</h2>
+    <div class="sub">CUIT ${esc(r.cliente.cuit)} ·
+      ${r.jurisdicciones.map(j => esc(j.jurisdiccion) + (j.nro_inscripcion ? ' Nº'+esc(j.nro_inscripcion) : '')).join(' · ') || 'sin jurisdicciones cargadas'}</div>
+    <div class="grid">
+      <div class="card"><div class="k">Ventas del mes</div><div class="v">${plata(r.ventas_mes)}</div></div>
+      <div class="card"><div class="k">Compras del mes</div><div class="v">${plata(r.compras_mes)}</div></div>
+      <div class="card"><div class="k">Cheques en cartera</div><div class="v">${r.cheques_cartera}</div>
+        <div class="mini">${plata(r.cheques_cartera_importe)}</div></div>
+      <div class="card"><div class="k">Banco sin conciliar</div>
+        <div class="v ${r.banco_sin_conciliar ? 'neg' : ''}">${r.banco_sin_conciliar}</div>
+        <div class="mini">movimientos</div></div>
+      ${p ? `<div class="card"><div class="k">Situación en el portal</div>
+        <div class="v sm ${p.situacion_fiscal === 'REGULAR' ? 'pos' : 'neg'}">${esc(p.situacion_fiscal || '—')}</div>
+        <div class="mini">al ${fecha(p.fecha_consulta)}</div></div>
+        <div class="card"><div class="k">Saldo a favor</div><div class="v sm">${plata(p.saldo_a_favor)}</div>
+        <div class="mini">última DJ ${esc(p.ultima_dj?.periodo || '—')}</div></div>` : ''}
+    </div>
+    ${p?.proximo_periodo_sin_presentar ? `<div class="aviso" style="margin-top:16px">
+      <b>DJ pendiente:</b> el portal no tiene presentado el período
+      ${esc(p.proximo_periodo_sin_presentar)}.
+      ${p.notificaciones_sin_leer ? ` · ${p.notificaciones_sin_leer} notificación(es) sin leer en el buzón fiscal.` : ''}
+    </div>` : ''}
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Vencimientos próximos</b>
+      <a href="#impuestos"><button class="g xs">Ver impuestos</button></a></div>
+      ${r.vencimientos.length ? tabla(
+        ['Impuesto','Fuente','Período','Vence','Importe','Estado'],
+        r.vencimientos.map(v => [esc(v.impuesto), esc(v.fuente), esc(v.periodo), fecha(v.fecha),
+          {n:plata(v.importe)}, badgeEstado(v.estado)]))
+        : '<div class="vacio">Sin vencimientos cargados.</div>'}
+    </div>
+    <div class="panel"><div class="panel-h"><b>Cheques que vencen en 30 días</b>
+      <a href="#cheques"><button class="g xs">Ver cheques</button></a></div>
+      ${r.cheques_a_vencer.length ? tabla(
+        ['Origen','Número','Banco','Vence','Importe','Estado'],
+        r.cheques_a_vencer.map(c => [esc(c.origen), esc(c.numero), esc(c.banco), fecha(c.fecha_pago),
+          {n:plata(c.importe)}, badgeEstado(c.estado)]))
+        : '<div class="vacio">Ninguno en los próximos 30 días.</div>'}
+    </div>`);
+}
+function tabla(cols, filas){
+  return `<div class="tabla-wrap"><table><thead><tr>${
+    cols.map(c => `<th${/importe|monto|total|base|saldo/i.test(c) ? ' class="num"' : ''}>${c}</th>`).join('')
+  }</tr></thead><tbody>${filas.map(f => `<tr>${f.map(c =>
+    typeof c === 'object' && c?.n !== undefined ? `<td class="num">${c.n}</td>` : `<td>${c}</td>`
+  ).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function badgeEstado(e){
+  const cls = {pendiente:'b-warn', presentado:'b-ok', pagado:'b-ok', en_cartera:'b-ok', emitido:'b-warn',
+    depositado:'b-mut', endosado:'b-mut', debitado:'b-mut', cobrado:'b-mut', rechazado:'b-bad',
+    anulado:'b-bad', borrador:'b-warn', presentada:'b-ok'}[e] || 'b-mut';
+  return `<span class="badge ${cls}">${esc((e||'').replace('_',' '))}</span>`;
+}
+
+/* ══ FACTURAS ══ */
+let fMov = 'venta';
+async function vFacturas(){
+  cargando('Facturas');
+  const fs = await api('/api/c/facturas?mov=' + fMov);
+  const esVenta = fMov === 'venta';
+  pintar(`
+    <h2>Facturas</h2><div class="sub">Las ventas llevan actividad y alícuota de IIBB: de ahí sale la DJ.</div>
+    <div class="tabs">
+      <button class="${esVenta?'on':''}" onclick="fMov='venta';vFacturas()">Ventas</button>
+      <button class="${!esVenta?'on':''}" onclick="fMov='compra';vFacturas()">Compras</button>
+    </div>
+    <div class="panel"><div class="panel-h"><b>Cargar ${esVenta?'venta':'compra'}</b>
+      <button class="g xs" onclick="toggle('#f-alta')">Mostrar / ocultar</button></div>
+      <div class="panel-b hide" id="f-alta"><div class="f">
+        <div class="full"><label>${esVenta?'Cliente':'Proveedor'}</label>
+          <select id="nf-ent">${optEnt(e => esVenta ? e.es_cliente : e.es_proveedor) || optEnt()}</select></div>
+        <div><label>Fecha</label><input type="date" id="nf-fecha" value="${hoy()}"></div>
+        <div><label>Tipo</label><select id="nf-tipo">
+          <option>FA</option><option>NC</option><option>ND</option></select></div>
+        <div><label>Letra</label><select id="nf-letra">
+          <option>A</option><option>B</option><option>C</option><option>X</option></select></div>
+        <div><label>Pto. venta</label><input id="nf-pv" placeholder="0001"></div>
+        <div><label>Número</label><input id="nf-num" placeholder="00001234"></div>
+        <div><label>Neto</label><input id="nf-neto" type="number" step="0.01" oninput="calcIVA()"></div>
+        <div><label>Alíc. IVA</label><select id="nf-alic" onchange="calcIVA()">
+          <option value="21">21%</option><option value="10.5">10,5%</option>
+          <option value="27">27%</option><option value="0">0% / exento</option></select></div>
+        <div><label>IVA</label><input id="nf-iva" type="number" step="0.01" oninput="calcTotal()"></div>
+        <div><label>Percepciones</label><input id="nf-perc" type="number" step="0.01" oninput="calcTotal()"></div>
+        <div><label>Total</label><input id="nf-total" type="number" step="0.01"></div>
+        ${esVenta ? `<div class="full"><label>Actividad + alícuota IIBB (default: la principal)</label>
+          <select id="nf-act">${ACT.map((a,i) =>
+            `<option value="${i}"${a.principal?' selected':''}>${esc(a.codigo)} · ${esc(a.nombre)} — ${a.alicuota}%${a.principal?' (principal)':''}</option>`
+          ).join('') || '<option value="">— sin padrón cargado —</option>'}</select></div>` : ''}
+        <div class="full" style="display:flex;gap:8px"><button onclick="altaFactura()">Guardar</button></div>
+      </div></div>
+    </div>
+    ${fs.length ? `<div class="panel"><div class="panel-h"><b>${fs.length} comprobante(s)</b>
+      <span class="mini">Total ${plata(fs.reduce((s,f) => s+f.total, 0))}</span></div>
+      ${tabla(['Fecha', esVenta?'Cliente':'Proveedor','Comprobante', esVenta?'Actividad':'', 'Neto','IVA','Total','Saldo'],
+        fs.map(f => [fecha(f.fecha), esc(f.entidad),
+          `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+          esVenta ? (f.iibb_codigo ? `<span class="mini">${esc(f.iibb_codigo)} · ${f.iibb_alicuota}%</span>`
+            : '<span class="badge b-bad">sin actividad</span>') : '',
+          {n:plata(f.neto)}, {n:plata(f.iva)}, {n:plata(f.total)},
+          {n: f.saldo > 0.01 ? `<span class="neg">${plata(f.saldo)}</span>`
+            : '<span class="badge b-ok">saldada</span>'}]))}
+    </div>` : '<div class="panel"><div class="vacio">Sin comprobantes cargados.</div></div>'}`);
+}
+function calcIVA(){
+  const neto = num('nf-neto') || 0, a = parseFloat(val('nf-alic')) || 0;
+  $('#nf-iva').value = (neto * a / 100).toFixed(2); calcTotal();
+}
+function calcTotal(){
+  $('#nf-total').value = ((num('nf-neto')||0) + (num('nf-iva')||0) + (num('nf-perc')||0)).toFixed(2);
+}
+async function altaFactura(){
+  try{
+    const cuerpo = {mov: fMov, entidad_id: +val('nf-ent'), fecha: val('nf-fecha'), tipo: val('nf-tipo'),
+      letra: val('nf-letra'), punto_venta: val('nf-pv'), numero: val('nf-num'),
+      neto: num('nf-neto'), alicuota_iva: num('nf-alic'), iva: num('nf-iva'),
+      percepciones: num('nf-perc'), total: num('nf-total')};
+    if (fMov === 'venta' && val('nf-act') !== ''){
+      const a = ACT[+val('nf-act')];
+      if (a) Object.assign(cuerpo, {iibb_jurisdiccion:a.jurisdiccion, iibb_codigo:a.codigo, iibb_alicuota:a.alicuota});
+    }
+    await post('/api/c/facturas', cuerpo); toast('Comprobante guardado'); vFacturas();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ══ IMPUESTOS ══ */
+async function vImpuestos(){
+  cargando('Impuestos');
+  const per = sessionStorage.getItem('ee-per') || periodoHoy();
+  const [vs, iva] = await Promise.all([
+    api('/api/c/vencimientos'),
+    api('/api/c/iva?periodo=' + encodeURIComponent(per)).catch(e => ({error:e.message})),
+  ]);
+  pintar(`
+    <h2>Impuestos</h2><div class="sub">Vencimientos y liquidación de IVA del período.</div>
+    <div class="panel"><div class="panel-h"><b>Liquidación de IVA</b>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input style="width:110px" id="iva-per" value="${esc(per)}" placeholder="MM/AAAA">
+        <button class="xs" onclick="verIVA()">Calcular</button></div></div>
+      <div class="panel-b">${iva.error ? `<div class="vacio">${esc(iva.error)}</div>` : `
+        <div class="grid">
+          <div class="card"><div class="k">Débito fiscal (ventas)</div><div class="v sm">${plata(iva.debito_fiscal)}</div></div>
+          <div class="card"><div class="k">Crédito fiscal (compras)</div><div class="v sm">${plata(iva.credito_fiscal)}</div></div>
+          <div class="card"><div class="k">Percepciones sufridas</div><div class="v sm">${plata(iva.percepciones_sufridas)}</div></div>
+          <div class="card"><div class="k">Saldo ${esc(iva.resultado)}</div>
+            <div class="v ${iva.resultado==='a pagar'?'neg':'pos'}">${plata(iva.saldo)}</div></div>
+        </div>
+        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-top:14px">
+          <div><div class="mini" style="margin-bottom:6px">Ventas por alícuota</div>
+            ${iva.ventas_por_alicuota.length ? tabla(['Alíc.','Neto','IVA'],
+              iva.ventas_por_alicuota.map(v => [v.alicuota+'%', {n:plata(v.neto)}, {n:plata(v.iva)}]))
+              : '<div class="vacio">Sin ventas.</div>'}</div>
+          <div><div class="mini" style="margin-bottom:6px">Compras por alícuota</div>
+            ${iva.compras_por_alicuota.length ? tabla(['Alíc.','Neto','IVA'],
+              iva.compras_por_alicuota.map(v => [v.alicuota+'%', {n:plata(v.neto)}, {n:plata(v.iva)}]))
+              : '<div class="vacio">Sin compras.</div>'}</div>
+        </div>`}</div>
+    </div>
+    <div class="panel"><div class="panel-h"><b>Vencimientos</b>
+      <button class="g xs" onclick="toggle('#v-alta')">Cargar uno</button></div>
+      <div class="panel-b hide" id="v-alta"><div class="f">
+        <div><label>Fuente</label><select id="nv-fuente">
+          <option value="arca">ARCA</option><option value="DGR-Fsa">DGR Formosa</option>
+          <option value="DGR-Ctes">DGR Corrientes</option></select></div>
+        <div><label>Impuesto</label><select id="nv-imp">
+          <option>IVA</option><option>IIBB</option><option>Ganancias</option>
+          <option>SICORE</option><option>Autónomos</option></select></div>
+        <div><label>Período</label><input id="nv-per" value="${periodoHoy()}"></div>
+        <div><label>Vence</label><input type="date" id="nv-fecha" value="${hoy()}"></div>
+        <div><label>Importe</label><input id="nv-imp-monto" type="number" step="0.01"></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaVenc()">Guardar</button></div>
+      </div></div>
+      ${vs.length ? tabla(['Fuente','Impuesto','Período','Vence','Importe','Estado'],
+        vs.map(v => [esc(v.fuente), esc(v.impuesto), esc(v.periodo), fecha(v.fecha),
+          {n:plata(v.importe)}, badgeEstado(v.estado)]))
+        : '<div class="vacio">Sin vencimientos. Los cargan los jobs de la suite o se agregan a mano.</div>'}
+    </div>`);
+}
+function verIVA(){ sessionStorage.setItem('ee-per', val('iva-per')); vImpuestos(); }
+async function altaVenc(){
+  try{
+    await post('/api/c/vencimientos', {fuente: val('nv-fuente'), impuesto: val('nv-imp'),
+      periodo: val('nv-per'), fecha: val('nv-fecha'), importe: num('nv-imp-monto')});
+    toast('Vencimiento guardado'); vImpuestos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ══ DJ IIBB ══ */
+async function vIIBB(){
+  cargando('DJ IIBB');
+  const per = sessionStorage.getItem('ee-per-iibb') || periodoHoy();
+  const d = await api('/api/c/dj/base?periodo=' + encodeURIComponent(per)).catch(e => ({error:e.message}));
+  if (d.error) return pintar(`<h2>DJ IIBB</h2><div class="vacio">${esc(d.error)}</div>`);
+  pintar(`
+    <h2>DJ de Ingresos Brutos</h2>
+    <div class="sub">Base por actividad del período — es lo que se carga en el portal de la provincia.</div>
+    <div class="panel"><div class="panel-h">
+      <div style="display:flex;gap:8px;align-items:center">
+        <input style="width:110px" id="dj-per" value="${esc(per)}">
+        <button class="xs" onclick="sessionStorage.setItem('ee-per-iibb',val('dj-per'));vIIBB()">Recalcular</button>
+      </div>
+      <span class="badge ${d.control_ok ? 'b-ok' : 'b-bad'}">
+        ${d.control_ok ? 'control OK: las bases cierran con las ventas'
+          : 'NO cierra — diferencia ' + plata(d.diferencia)}</span></div>
+      <div class="panel-b">
+        <div class="grid">
+          <div class="card"><div class="k">Impuesto determinado</div><div class="v">${plata(d.impuesto_determinado)}</div></div>
+          <div class="card"><div class="k">Suma de bases</div><div class="v sm">${plata(d.suma_bases)}</div></div>
+          <div class="card"><div class="k">Total ventas del período</div><div class="v sm">${plata(d.total_ventas)}</div></div>
+        </div>
+        ${!d.control_ok ? `<div class="aviso" style="margin-top:14px;border-left-color:var(--bad)">
+          <b>No presentar así.</b> Hay ${plata(Math.abs(d.diferencia))} de ventas que no están imputadas a
+          ninguna actividad${d.sin_actividad.length ? ` (${d.sin_actividad[0].facturas} comprobante/s)` : ''}.
+          Asignales actividad en el módulo Facturas.</div>` : ''}
+      </div>
+      ${d.bases.length ? tabla(['Código','Actividad','Alíc.','Base imponible','Impuesto','Comprobantes'],
+        d.bases.map(b => [esc(b.codigo), esc(b.nombre || '—'), b.alicuota + '%',
+          {n:plata(b.base)}, {n:plata(b.impuesto)}, b.facturas]))
+        : '<div class="vacio">Sin ventas en el período.</div>'}
+    </div>
+    <div class="aviso">El portal de ATP recibe estos importes en la grilla de
+      <i>Declaración Actividad → Cargar Actividad</i>, una fila por par actividad+alícuota.
+      Las deducciones (retenciones, percepciones, SIRCUPA) las trae ATP sola.</div>`);
+}
+
+/* ══ BANCOS ══ */
+async function vBancos(){
+  cargando('Bancos');
+  const [cs, ms] = await Promise.all([api('/api/c/cuentas'), api('/api/c/movimientos')]);
+  CTAS = cs;
+  pintar(`
+    <h2>Bancos</h2><div class="sub">El extracto. Los movimientos se van completando con el CUIT y el
+      recibo cuando se usan para pagar o cuando concilian.</div>
+    <div class="grid">${cs.map(c => `<div class="card"><div class="k">${esc(c.banco)}</div>
+      <div class="v sm">${plata(c.saldo_calculado)}</div>
+      <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.</div></div>`).join('')
+      || '<div class="card"><div class="k">Sin cuentas</div><div class="mini" style="margin-top:6px">Cargá una abajo.</div></div>'}</div>
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Cuenta nueva</b>
+      <button class="g xs" onclick="toggle('#b-cta')">Mostrar</button></div>
+      <div class="panel-b hide" id="b-cta"><div class="f">
+        <div><label>Banco</label><input id="nb-banco"></div>
+        <div><label>Tipo</label><select id="nb-tipo"><option value="CC">Cta. corriente</option>
+          <option value="CA">Caja de ahorro</option></select></div>
+        <div><label>Número</label><input id="nb-num"></div>
+        <div><label>CBU</label><input id="nb-cbu"></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaCuenta()">Crear</button></div>
+      </div></div>
+    </div>
+    <div class="panel"><div class="panel-h"><b>Movimiento manual</b>
+      <button class="g xs" onclick="toggle('#b-mov')">Mostrar</button></div>
+      <div class="panel-b hide" id="b-mov"><div class="f">
+        <div><label>Cuenta</label><select id="nm-cta">${optCta()}</select></div>
+        <div><label>Fecha</label><input type="date" id="nm-fecha" value="${hoy()}"></div>
+        <div class="full"><label>Descripción</label><input id="nm-desc" placeholder="TRANSFERENCIA CUIT 30646382943"></div>
+        <div><label>Importe (− si debita)</label><input id="nm-imp" type="number" step="0.01"></div>
+        <div><label>Referencia</label><input id="nm-ref"></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaMov()">Agregar</button></div>
+      </div></div>
+    </div>
+    <div class="panel"><div class="panel-h"><b>${ms.length} movimiento(s)</b>
+      <a href="#conciliacion"><button class="g xs">Ir a conciliación</button></a></div>
+      ${ms.length ? tabla(['Fecha','Banco','Descripción','CUIT','Importe','Estado'],
+        ms.map(m => [fecha(m.fecha), esc(m.banco), esc(m.descripcion||'—'),
+          m.cuit_contraparte ? `<span class="mini">${esc(m.cuit_contraparte)}</span>` : '—',
+          {n:`<span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span>`},
+          m.conciliado ? `<span class="badge b-ok" title="${esc(m.conciliado_motivo||'')}">conciliado</span>`
+            : '<span class="badge b-warn">pendiente</span>']))
+        : '<div class="vacio">Sin movimientos. Se cargan a mano o los deja el job del banco.</div>'}
+    </div>`);
+}
+async function altaCuenta(){
+  try{ await post('/api/c/cuentas', {banco: val('nb-banco'), tipo: val('nb-tipo'),
+    numero: val('nb-num'), cbu: val('nb-cbu')});
+    toast('Cuenta creada'); await precargar(); vBancos();
+  }catch(e){ toast(e.message, true); }
+}
+async function altaMov(){
+  try{ await post('/api/c/movimientos', {cuenta_id: +val('nm-cta'), fecha: val('nm-fecha'),
+    descripcion: val('nm-desc'), importe: num('nm-imp'), referencia: val('nm-ref')});
+    toast('Movimiento agregado'); vBancos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ══ CHEQUES ══ */
+async function vCheques(){
+  cargando('Cheques');
+  const chs = await api('/api/c/cheques');
+  const rec = chs.filter(c => c.origen === 'recibido'), emi = chs.filter(c => c.origen === 'emitido');
+  pintar(`
+    <h2>Cheques</h2>
+    <div class="sub">Los recibidos entran <b>solo por una cobranza</b> y se pueden depositar o endosar.
+      Los emitidos son propios del cliente.</div>
+    <div class="panel"><div class="panel-h"><b>Recibidos — ${rec.length}</b>
+      <span class="mini">en cartera: ${plata(rec.filter(c=>c.estado==='en_cartera').reduce((s,c)=>s+c.importe,0))}</span></div>
+      ${rec.length ? tabla(['Número','Banco','Librador','Vence','Importe','Estado','Recibo','Acciones'],
+        rec.map(c => [esc(c.numero), esc(c.banco||'—'), esc(c.librador||c.cuit_librador||'—'),
+          fecha(c.fecha_pago), {n:plata(c.importe)}, badgeEstado(c.estado),
+          `<span class="mini">${esc(c.recibo_origen||'—')}</span>`,
+          c.estado === 'en_cartera' ? `<div class="row-act">
+            <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
+            <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']))
+        : `<div class="vacio">Sin cheques recibidos.<br>
+           <span class="mini">Se cargan desde Pagos → cobranza con medio cheque.</span></div>`}
+    </div>
+    <div class="panel"><div class="panel-h"><b>Emitidos — ${emi.length}</b>
+      <button class="g xs" onclick="toggle('#ch-alta')">Emitir uno</button></div>
+      <div class="panel-b hide" id="ch-alta"><div class="f">
+        <div><label>Número</label><input id="nch-num"></div>
+        <div><label>Banco</label><input id="nch-banco"></div>
+        <div><label>Cuenta</label><select id="nch-cta"><option value="">—</option>${optCta()}</select></div>
+        <div><label>Fecha de pago</label><input type="date" id="nch-fp" value="${hoy()}"></div>
+        <div><label>Importe</label><input id="nch-imp" type="number" step="0.01"></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaCheque()">Emitir</button></div>
+      </div></div>
+      ${emi.length ? tabla(['Número','Banco','Vence','Importe','Estado'],
+        emi.map(c => [esc(c.numero), esc(c.banco||'—'), fecha(c.fecha_pago),
+          {n:plata(c.importe)}, badgeEstado(c.estado)]))
+        : '<div class="vacio">Sin cheques emitidos.</div>'}
+    </div>`);
+}
+async function altaCheque(){
+  try{ await post('/api/c/cheques', {origen:'emitido', numero: val('nch-num'), banco: val('nch-banco'),
+    cuenta_id: val('nch-cta') ? +val('nch-cta') : null, fecha_pago: val('nch-fp'), importe: num('nch-imp')});
+    toast('Cheque emitido'); vCheques();
+  }catch(e){ toast(e.message, true); }
+}
+async function depositar(id){
+  if (!CTAS.length) return toast('Primero cargá una cuenta bancaria', true);
+  const cta = prompt('¿En qué cuenta?\n' + CTAS.map(c => `${c.id} = ${c.banco} ${c.numero||''}`).join('\n'), CTAS[0].id);
+  if (!cta) return;
+  try{ await post(`/api/c/cheques/${id}/depositar`, {cuenta_id:+cta, fecha:hoy()});
+    toast('Depositado'); vCheques(); }catch(e){ toast(e.message, true); }
+}
+async function endosar(id){
+  const e = prompt('¿A qué entidad?\n' + ENT.map(x => `${x.id} = ${x.razon_social}`).join('\n'));
+  if (!e) return;
+  try{ await post(`/api/c/cheques/${id}/endosar`, {entidad_id:+e});
+    toast('Endosado'); vCheques(); }catch(err){ toast(err.message, true); }
+}
+
+/* ══ PAGOS ══ */
+let pDir = 'pago', pFacturas = [], pMedios = [];
+async function vPagos(){
+  cargando('Pagos y cobranzas');
+  const ps = await api('/api/c/pagos');
+  pintar(`
+    <h2>Pagos y cobranzas</h2>
+    <div class="sub">Se cancelan facturas con movimientos de banco, cheques o efectivo.
+      Lo que se paga por banco deja el CUIT y el recibo pegados al movimiento.</div>
+    <div class="panel"><div class="panel-h"><b>Nuevo comprobante</b>
+      <button class="g xs" onclick="toggle('#p-alta');prepararPago()">Mostrar / ocultar</button></div>
+      <div class="panel-b hide" id="p-alta">
+        <div class="tabs">
+          <button class="${pDir==='pago'?'on':''}" onclick="pDir='pago';prepararPago()">Pago a proveedor</button>
+          <button class="${pDir==='cobro'?'on':''}" onclick="pDir='cobro';prepararPago()">Cobranza de cliente</button>
+        </div>
+        <div class="f">
+          <div class="full"><label>${pDir==='pago'?'Proveedor':'Cliente'}</label>
+            <select id="np-ent" onchange="cargarImpagas()">${
+              optEnt(e => pDir==='pago' ? e.es_proveedor : e.es_cliente) || optEnt()}</select></div>
+          <div><label>Fecha</label><input type="date" id="np-fecha" value="${hoy()}"></div>
+          <div><label>Nº recibo / OP</label><input id="np-num"></div>
+        </div>
+        <div style="margin-top:14px"><b style="font-size:13px">Facturas a cancelar</b>
+          <div id="np-facturas" class="mini" style="margin-top:6px">Elegí una entidad…</div></div>
+        <div style="margin-top:14px"><b style="font-size:13px">Con qué se paga</b>
+          <div id="np-medios" style="margin-top:6px"></div>
+          <div class="row-act" style="margin-top:8px">
+            <button class="g xs" onclick="addMedio('efectivo')">+ Efectivo</button>
+            <button class="g xs" onclick="addMedio('transferencia')">+ Transferencia</button>
+            <button class="g xs" onclick="addMedio('cheque')">+ Cheque</button>
+          </div></div>
+        <div style="margin-top:16px"><button onclick="guardarPago()">Guardar comprobante</button></div>
+      </div>
+    </div>
+    ${ps.length ? `<div class="panel"><div class="panel-h"><b>${ps.length} comprobante(s)</b></div>
+      ${tabla(['Fecha','Tipo','Entidad','Nº','Medios','Aplica a','Total'],
+        ps.map(p => [fecha(p.fecha),
+          p.direccion === 'cobro' ? '<span class="badge b-ok">cobranza</span>' : '<span class="badge b-warn">pago</span>',
+          esc(p.entidad), esc(p.numero||'—'),
+          `<span class="mini">${p.medios.map(m => esc(m.medio)).join(', ')}</span>`,
+          `<span class="mini">${p.aplicaciones.map(a => `${esc(a.tipo)} ${esc(a.numero||a.factura_id)}`).join(', ') || '—'}</span>`,
+          {n:plata(p.total)}]))}
+    </div>` : '<div class="panel"><div class="vacio">Sin pagos ni cobranzas.</div></div>'}`);
+}
+function prepararPago(){ pMedios = []; pintarMedios(); cargarImpagas();
+  const s = $('#np-ent'); if (s) s.innerHTML = optEnt(e => pDir==='pago' ? e.es_proveedor : e.es_cliente) || optEnt();
+  document.querySelectorAll('#p-alta .tabs button').forEach((b,i) =>
+    b.classList.toggle('on', (i===0) === (pDir==='pago')));
+}
+async function cargarImpagas(){
+  const cont = $('#np-facturas'); if (!cont) return;
+  const eid = +val('np-ent'); if (!eid) return cont.textContent = 'Elegí una entidad…';
+  const mov = pDir === 'pago' ? 'compra' : 'venta';
+  const fs = (await api(`/api/c/facturas?mov=${mov}&impagas=1`)).filter(f => f.entidad_id === eid);
+  pFacturas = fs;
+  cont.innerHTML = fs.length ? fs.map((f,i) => `
+    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--txt);margin:4px 0">
+      <input type="checkbox" style="width:auto" id="pf-${i}" onchange="sumarSel()">
+      ${esc(f.tipo)} ${esc(f.punto_venta||'')}-${esc(f.numero||'')} · ${fecha(f.fecha)} ·
+      saldo <b>${plata(f.saldo)}</b></label>`).join('')
+    : '<span class="mini">No tiene facturas impagas.</span>';
+}
+function sumarSel(){
+  const t = pFacturas.reduce((s,f,i) => s + ($('#pf-'+i)?.checked ? f.saldo : 0), 0);
+  if (pMedios.length === 1) { const inp = $('#pm-imp-0'); if (inp && !inp.value) inp.value = t.toFixed(2); }
+}
+function addMedio(medio){ pMedios.push({medio}); pintarMedios(); }
+function quitarMedio(i){ pMedios.splice(i,1); pintarMedios(); }
+function pintarMedios(){
+  const c = $('#np-medios'); if (!c) return;
+  c.innerHTML = pMedios.map((m,i) => `
+    <div class="cand" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <b>${m.medio}</b><button class="g xs" onclick="quitarMedio(${i})">Quitar</button></div>
+      <div class="f">
+        <div><label>Importe</label><input id="pm-imp-${i}" type="number" step="0.01"></div>
+        ${m.medio === 'transferencia' ? `<div class="full"><label>Movimiento del banco</label>
+          <select id="pm-mov-${i}"><option value="">Cargando…</option></select></div>` : ''}
+        ${m.medio === 'cheque' ? (pDir === 'pago' ? `
+          <div class="full"><label>Cheque de cartera a endosar (o dejar vacío y emitir uno nuevo)</label>
+            <select id="pm-chq-${i}" onchange="toggleChqNuevo(${i})"><option value="">— emitir uno nuevo —</option></select></div>
+          <div class="full chq-nuevo-${i}"><div class="f">
+            <div><label>Número</label><input id="pm-num-${i}"></div>
+            <div><label>Banco</label><input id="pm-banco-${i}"></div>
+            <div><label>Fecha de pago</label><input type="date" id="pm-fp-${i}" value="${hoy()}"></div>
+          </div></div>` : `
+          <div class="full"><div class="f">
+            <div><label>Número</label><input id="pm-num-${i}"></div>
+            <div><label>Banco</label><input id="pm-banco-${i}"></div>
+            <div><label>Fecha de pago</label><input type="date" id="pm-fp-${i}" value="${hoy()}"></div>
+            <div><label>CUIT librador</label><input id="pm-lib-${i}" placeholder="opcional"></div>
+          </div></div>`) : ''}
+      </div>
+    </div>`).join('') || '<span class="mini">Agregá al menos un medio.</span>';
+  pMedios.forEach((m,i) => {
+    if (m.medio === 'transferencia') api('/api/c/movimientos?pendientes=1').then(ms => {
+      const s = $('#pm-mov-'+i); if (!s) return;
+      s.innerHTML = '<option value="">— elegir —</option>' + ms.map(x =>
+        `<option value="${x.id}">${fecha(x.fecha)} · ${esc(x.banco)} · ${plata(x.importe)} · ${esc((x.descripcion||'').slice(0,32))}</option>`).join('');
+    });
+    if (m.medio === 'cheque' && pDir === 'pago') api('/api/c/cheques?estado=en_cartera').then(cs => {
+      const s = $('#pm-chq-'+i); if (!s) return;
+      s.innerHTML = '<option value="">— emitir uno nuevo —</option>' + cs.map(x =>
+        `<option value="${x.id}">${esc(x.numero)} · ${esc(x.banco||'')} · ${plata(x.importe)} · vence ${fecha(x.fecha_pago)}</option>`).join('');
+    });
+  });
+}
+function toggleChqNuevo(i){
+  const usa = val('pm-chq-'+i) !== '';
+  document.querySelectorAll('.chq-nuevo-'+i).forEach(e => e.classList.toggle('hide', usa));
+}
+async function guardarPago(){
+  try{
+    const aplicaciones = pFacturas.map((f,i) => $('#pf-'+i)?.checked ? {factura_id:f.id, importe:f.saldo} : null)
+      .filter(Boolean);
+    const medios = pMedios.map((m,i) => {
+      const base = {medio:m.medio, importe:num('pm-imp-'+i)};
+      if (m.medio === 'transferencia') base.movimiento_id = +val('pm-mov-'+i) || null;
+      if (m.medio === 'cheque'){
+        const enCartera = pDir === 'pago' ? val('pm-chq-'+i) : '';
+        if (enCartera) base.cheque_id = +enCartera;
+        else base.cheque = {numero: val('pm-num-'+i), banco: val('pm-banco-'+i),
+          fecha_pago: val('pm-fp-'+i), cuit_librador: val('pm-lib-'+i)};
+      }
+      return base;
+    });
+    await post('/api/c/pagos', {direccion:pDir, entidad_id:+val('np-ent'), fecha:val('np-fecha'),
+      numero:val('np-num'), aplicaciones, medios});
+    toast('Comprobante guardado — el banco quedó actualizado'); pMedios = []; vPagos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ══ CONCILIACIÓN ══ */
+async function vConciliacion(){
+  cargando('Conciliación');
+  const ps = await api('/api/c/conciliacion');
+  const unicos = ps.filter(p => p.unico).length, ambiguos = ps.filter(p => p.candidatos.length > 1).length;
+  pintar(`
+    <h2>Conciliación</h2>
+    <div class="sub">Se concilia solo lo que tiene <b>un único</b> candidato. Con dos o más decide una persona:
+      adivinar rompe la cuenta corriente en silencio.</div>
+    <div class="grid">
+      <div class="card"><div class="k">Sin conciliar</div><div class="v">${ps.length}</div></div>
+      <div class="card"><div class="k">Se pueden solas</div><div class="v pos">${unicos}</div></div>
+      <div class="card"><div class="k">Ambiguas</div><div class="v ${ambiguos?'neg':''}">${ambiguos}</div></div>
+    </div>
+    <div style="margin:16px 0"><button onclick="conciliarAuto()" ${unicos?'':'disabled'}>
+      Conciliar las ${unicos} seguras</button></div>
+    ${ps.length ? ps.map(p => `
+      <div class="panel"><div class="panel-h">
+        <div><b>${fecha(p.fecha)} · ${esc(p.banco)} ·
+          <span class="${p.importe<0?'neg':'pos'}">${plata(p.importe)}</span></b>
+          <div class="mini">${esc(p.descripcion || 'sin descripción')}</div></div>
+        ${p.unico ? '<span class="badge b-ok">1 candidato</span>'
+          : p.candidatos.length ? `<span class="badge b-warn">${p.candidatos.length} candidatos</span>`
+          : '<span class="badge b-mut">sin candidato</span>'}</div>
+        <div class="panel-b">${p.candidatos.length ? p.candidatos.map(c => `
+          <div class="cand"><span>${esc(c.motivo)}</span>
+            <button class="xs" onclick="conciliarManual(${p.id},'${c.tipo}',${c.id})">Conciliar</button></div>`).join('')
+          : '<span class="mini">Nada coincide en monto, fecha y CUIT. Puede ser un gasto bancario, o falta cargar la factura.</span>'}
+        </div>
+      </div>`).join('')
+      : '<div class="panel"><div class="vacio">Todo conciliado.</div></div>'}`);
+}
+async function conciliarAuto(){
+  try{ const r = await post('/api/c/conciliacion/auto', {});
+    toast(`${r.conciliados} conciliada(s) · ${r.ambiguos} ambigua(s) · ${r.sin_candidato} sin candidato`);
+    vConciliacion();
+  }catch(e){ toast(e.message, true); }
+}
+async function conciliarManual(mid, tipo, id){
+  try{ await post('/api/c/conciliacion/manual', {movimiento_id:mid, tipo, id});
+    toast('Conciliado'); vConciliacion(); }catch(e){ toast(e.message, true); }
+}
+
+/* ══ ENTIDADES ══ */
+async function vEntidades(){
+  cargando('Entidades');
+  ENT = await api('/api/c/entidades');
+  pintar(`
+    <h2>Entidades</h2>
+    <div class="sub">La ficha del CUIT es única para todo el estudio; esta relación
+      (proveedor/cliente, cuenta corriente) es solo de ${esc(CLI.alias)} y no la ve nadie más.</div>
+    <div class="panel"><div class="panel-h"><b>Agregar</b>
+      <button class="g xs" onclick="toggle('#e-alta')">Mostrar</button></div>
+      <div class="panel-b hide" id="e-alta"><div class="f">
+        <div><label>CUIT</label><input id="ne-cuit"></div>
+        <div class="full"><label>Razón social <span style="text-transform:none">(si el CUIT es nuevo)</span></label>
+          <input id="ne-rs"></div>
+        <div><label>Alias interno</label><input id="ne-alias"></div>
+        <div><label>Rol</label><select id="ne-rol">
+          <option value="prov">Proveedor</option><option value="cli">Cliente</option>
+          <option value="ambos">Ambos</option></select></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaEntidad()">Agregar</button></div>
+      </div></div>
+      ${ENT.length ? tabla(['CUIT','Razón social','Rol','Alias','Compras','Ventas'],
+        ENT.map(e => [esc(e.cuit), esc(e.razon_social),
+          [e.es_proveedor && 'proveedor', e.es_cliente && 'cliente'].filter(Boolean).join(' + ') || '—',
+          esc(e.alias_interno||'—'), {n:plata(e.compras)}, {n:plata(e.ventas)}]))
+        : '<div class="vacio">Sin entidades.</div>'}
+    </div>`);
+}
+async function altaEntidad(){
+  try{
+    const rol = val('ne-rol');
+    await post('/api/c/entidades', {cuit: val('ne-cuit'), razon_social: val('ne-rs'),
+      alias_interno: val('ne-alias'), es_proveedor: rol !== 'cli', es_cliente: rol !== 'prov'});
+    toast('Entidad agregada'); await precargar(); vEntidades();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ── arranque ── */
+document.documentElement.className = localStorage.getItem('ee-tema') || '';
+const guardado = sessionStorage.getItem('ee-cli');
+if (guardado) entrar(JSON.parse(guardado)); else cargarClientes();
+</script>
+</body>
+</html>
