@@ -1726,6 +1726,86 @@ def api_factura_actividad(fid):
     return jsonify({"ok": True})
 
 
+# ══ JOBS — la suite de parsers, manejada desde la pantalla ═════════════════
+# El catálogo y el lanzador viven en `parsers/suite.py`; acá solo se exponen.
+# Los jobs ATENDIDOS abren su propia ventana y esperan a una persona, así que
+# corren en un hilo y su salida se lee después: si el request esperara, el
+# navegador se quedaría colgado los 8 minutos del login.
+import threading
+import uuid
+
+sys.path.insert(0, str(RAIZ / "parsers"))
+_CORRIDAS = {}          # id -> {job, args, estado, salida, inicio, fin, codigo}
+_CORRIDAS_LOCK = threading.Lock()
+
+
+def _suite():
+    """Se importa al vuelo para que un error en la suite no impida arrancar el
+    sistema entero: sin jobs se puede trabajar, sin servidor no."""
+    import importlib
+    import suite as _s
+    return importlib.reload(_s)
+
+
+@app.get("/api/jobs")
+def api_jobs():
+    try:
+        cat = _suite().catalogo()
+    except Exception as e:
+        return jsonify({"error": f"no pude leer la suite de jobs: {e}"}), 500
+    with _CORRIDAS_LOCK:
+        ultimas = {}
+        for c in _CORRIDAS.values():
+            v = ultimas.get(c["job"])
+            if not v or c["inicio"] > v["inicio"]:
+                ultimas[c["job"]] = c
+    for j in cat:
+        u = ultimas.get(j["clave"])
+        j["ultima_corrida"] = {k: u[k] for k in ("id", "estado", "inicio", "fin", "codigo")} if u else None
+    return jsonify(cat)
+
+
+@app.post("/api/jobs/<clave>/correr")
+def api_job_correr(clave):
+    b = request.get_json(force=True, silent=True) or {}
+    args = []
+    for k, v in (b.get("args") or {}).items():
+        if v not in (None, ""):
+            args += [k, str(v)]
+    cid = uuid.uuid4().hex[:8]
+    with _CORRIDAS_LOCK:
+        _CORRIDAS[cid] = {"id": cid, "job": clave, "args": args, "estado": "corriendo",
+                          "salida": "", "inicio": datetime.now().isoformat(timespec="seconds"),
+                          "fin": None, "codigo": None}
+
+    def correr():
+        try:
+            codigo, salida = _suite().correr(clave, args)
+        except Exception as e:
+            codigo, salida = 2, f"No se pudo lanzar el job: {e}"
+        with _CORRIDAS_LOCK:
+            _CORRIDAS[cid].update(
+                estado=("ok" if codigo == 0 else "falló"), codigo=codigo, salida=salida,
+                fin=datetime.now().isoformat(timespec="seconds"))
+
+    threading.Thread(target=correr, daemon=True).start()
+    return jsonify({"ok": True, "id": cid})
+
+
+@app.get("/api/jobs/corrida/<cid>")
+def api_job_corrida(cid):
+    with _CORRIDAS_LOCK:
+        c = _CORRIDAS.get(cid)
+        return jsonify(dict(c)) if c else (jsonify({"error": "no existe esa corrida"}), 404)
+
+
+@app.get("/api/jobs/corridas")
+def api_job_corridas():
+    with _CORRIDAS_LOCK:
+        cs = sorted(_CORRIDAS.values(), key=lambda x: x["inicio"], reverse=True)[:20]
+        return jsonify([{k: v for k, v in c.items() if k != "salida"} for c in cs])
+
+
 if __name__ == "__main__":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

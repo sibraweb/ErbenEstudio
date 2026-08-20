@@ -138,6 +138,7 @@ const MODULOS = [
   ['impuestos',    'Impuestos'],
   ['iibb',         'DJ IIBB'],
   ['entidades',    'Entidades'],
+  ['jobs',         'Parsers y jobs'],
   ['clientes',     'Clientes del estudio'],
 ];
 
@@ -249,7 +250,7 @@ function router(){
   MODULOS.forEach(([k]) => $('#nav-'+k)?.classList.toggle('on', k === v));
   const f = {tesoreria:vTesoreria, facturas:vFacturas, bancos:vBancos, cheques:vCheques, pagos:vPagos,
     conciliacion:vConciliacion, impuestos:vImpuestos, iibb:vIIBB, entidades:vEntidades,
-    clientes:vClientes}[v] || vTesoreria;
+    jobs:vJobs, clientes:vClientes}[v] || vTesoreria;
   if (!CLI && v !== 'clientes') return vClientes();
   f();
 }
@@ -1038,6 +1039,103 @@ async function altaEntidad(){
       alias_interno: val('ne-alias'), es_proveedor: rol !== 'cli', es_cliente: rol !== 'prov'});
     toast('Entidad agregada'); await precargar(); vEntidades();
   }catch(e){ toast(e.message, true); }
+}
+
+/* ══ PARSERS Y JOBS ══
+   La suite: traer info de bancos, ARCA y DGR, y llevar la DJ al portal.
+   Los jobs ATENDIDOS abren su ventana y esperan a una persona. */
+const RUBROS_JOB = {impuestos:'Impuestos — ARCA y las provincias', bancos:'Bancos — extractos y cheques'};
+async function vJobs(){
+  cargando('Parsers y jobs');
+  const js = await api('/api/jobs');
+  if (js.error) return pintar(`<h2>Parsers y jobs</h2><div class="vacio">${esc(js.error)}</div>`);
+  pintar(`
+    <h2>Parsers y jobs</h2>
+    <div class="sub">Traen la información de los portales a este sistema — y llevan la DJ de vuelta.
+      Los marcados <b>atendido</b> abren una ventana y esperan que entres vos (2FA o captcha).</div>
+    ${Object.entries(RUBROS_JOB).map(([r, titulo]) => {
+      const del = js.filter(j => j.rubro === r);
+      if (!del.length) return '';
+      return `<div class="panel"><div class="panel-h"><b>${titulo}</b></div>
+        <div class="panel-b">${del.map(j => tarjetaJob(j)).join('')}</div></div>`;
+    }).join('')}
+    <div class="panel"><div class="panel-h"><b>Últimas corridas</b>
+      <button class="g xs" onclick="vJobs()">Actualizar</button></div>
+      <div id="jb-corridas"><div class="vacio">—</div></div>
+    </div>`);
+  verCorridas();
+}
+function tarjetaJob(j){
+  const u = j.ultima_corrida;
+  const faltan = j.clientes.filter(c => c.credencial === false).map(c => c.alias);
+  return `<div class="cand" style="display:block;margin-bottom:9px">
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+      <div style="flex:1;min-width:230px">
+        <b>${esc(j.titulo)}</b>
+        ${j.atendido ? '<span class="badge b-warn" style="margin-left:6px">atendido</span>' : ''}
+        ${j.existe ? '' : '<span class="badge b-bad" style="margin-left:6px">falta el archivo</span>'}
+        <span class="badge b-mut" style="margin-left:6px">${esc(j.origen)}</span>
+        <div class="mini" style="margin-top:3px">${esc(j.desc)}</div>
+        ${faltan.length ? `<div class="mini neg">sin credencial: ${faltan.map(esc).join(', ')}</div>` : ''}
+        ${u ? `<div class="mini">última corrida ${esc(u.inicio.replace('T',' '))} ·
+          ${u.estado === 'corriendo' ? '<span class="amb">corriendo…</span>'
+            : u.estado === 'ok' ? '<span class="pos">terminó bien</span>' : '<span class="neg">falló</span>'}
+          ${u.estado !== 'corriendo' ? `· <a href="#" onclick="verSalida('${u.id}');return false">ver salida</a>` : ''}
+        </div>` : ''}
+      </div>
+      <div class="row-act" style="align-items:center">
+        ${j.args.includes('--alias') ? `<select id="jb-alias-${j.clave}" style="width:auto;min-width:130px">
+          ${j.clientes.map(c => `<option value="${esc(c.alias)}"${CLI && c.alias===CLI.alias?' selected':''}>${esc(c.alias)}</option>`).join('')}
+        </select>` : ''}
+        ${j.args.includes('--periodo') ? `<input id="jb-per-${j.clave}" value="${periodoHoy()}"
+          style="width:100px" placeholder="MM/AAAA">` : ''}
+        <button class="xs" ${j.existe?'':'disabled'} onclick="correrJob('${j.clave}', ${JSON.stringify(j.args).replace(/"/g,'&quot;')})">Correr</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function correrJob(clave, argsDef){
+  const args = {};
+  if (argsDef.includes('--alias')) args['--alias'] = $('#jb-alias-'+clave)?.value;
+  if (argsDef.includes('--periodo')) args['--periodo'] = $('#jb-per-'+clave)?.value;
+  try{
+    const r = await post(`/api/jobs/${clave}/correr`, {args});
+    toast('Job lanzado — si es atendido, mirá la ventana que se abre');
+    seguir(r.id);
+  }catch(e){ toast(e.message, true); }
+}
+async function seguir(cid){
+  for (let i = 0; i < 600; i++){
+    await new Promise(r => setTimeout(r, 2000));
+    let c; try{ c = await api('/api/jobs/corrida/' + cid); }catch(e){ return; }
+    if (!c || c.estado === 'corriendo') { if (location.hash === '#jobs') verCorridas(); continue; }
+    toast(c.estado === 'ok' ? 'El job terminó bien' : 'El job falló — mirá la salida', c.estado !== 'ok');
+    if (location.hash === '#jobs') { vJobs(); verSalida(cid); }
+    return;
+  }
+}
+async function verCorridas(){
+  const c = $('#jb-corridas'); if (!c) return;
+  const cs = await api('/api/jobs/corridas').catch(() => []);
+  c.innerHTML = cs.length ? tabla(['Arrancó','Job','Argumentos','Estado',''],
+    cs.map(x => [esc(x.inicio.replace('T',' ')), esc(x.job),
+      `<span class="mini">${esc((x.args||[]).join(' ')) || '—'}</span>`,
+      x.estado === 'corriendo' ? '<span class="badge b-warn">corriendo</span>'
+        : x.estado === 'ok' ? '<span class="badge b-ok">ok</span>' : '<span class="badge b-bad">falló</span>',
+      `<button class="g xs" onclick="verSalida('${x.id}')">Salida</button>`]))
+    : '<div class="vacio">Todavía no se corrió ningún job.</div>';
+}
+async function verSalida(cid){
+  const c = await api('/api/jobs/corrida/' + cid);
+  const cont = $('#jb-corridas'); if (!cont) return;
+  cont.insertAdjacentHTML('afterbegin', `
+    <div class="panel-b" style="border-bottom:1px solid var(--bor2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <b>${esc(c.job)} · ${esc(c.inicio.replace('T',' '))}</b>
+        <button class="g xs" onclick="this.closest('div.panel-b').remove()">Cerrar</button></div>
+      <pre style="background:var(--bg);border:1px solid var(--bor);border-radius:7px;padding:11px;
+        overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap">${esc(c.salida || '(sin salida)')}</pre>
+    </div>`);
 }
 
 /* ══ CLIENTES DEL ESTUDIO ══ */

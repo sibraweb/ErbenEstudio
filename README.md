@@ -10,8 +10,20 @@ administra los impuestos y papeles de terceros.
 
 ## Correr
 
+**Doble clic en el ícono `ERBEN ESTUDIO` del Escritorio.** El servidor arranca,
+el navegador se abre solo, y el sistema queda andando mientras esa ventana
+siga abierta. Si ya estaba prendido, no levanta otro: abre y listo.
+
+La primera vez, para crear el ícono:
+
 ```
-py estudio-contable/servidor/server.py      →  http://localhost:8310
+powershell -ExecutionPolicy Bypass -File estudio-contable/instalar_acceso_directo.ps1
+```
+
+A mano, si hace falta:
+
+```
+py estudio-contable/arrancar.py      →  http://localhost:8310
 ```
 
 La primera corrida crea `C:\SIBRA\estudio\estudio.sqlite3` y la siembra con lo
@@ -37,6 +49,7 @@ También está en `.claude/launch.json` como `erben-estudio`.
 | **Pagos** | cancela facturas con movimientos de banco, cheques o efectivo |
 | **Conciliación** | automática cuando hay **un único** candidato; con dos o más decide una persona |
 | **Entidades** | la relación de este cliente, sobre el maestro único por CUIT |
+| **Parsers y jobs** | la suite: traer info de bancos, ARCA y DGR — y **llevar la DJ liquidada al portal** para que la persona presente |
 
 ## El flujo que ata todo
 
@@ -65,7 +78,8 @@ adivinar rompe la cuenta corriente en silencio.
 - [x] App con selector de cliente y los 9 módulos (`sistema/index.html`)
 - [x] Módulo Tesorería (5 pestañas, con Tablero) y filtro de empresa arriba
 - [x] Probado de punta a punta: 53/53 checks desde base limpia
-- [ ] Migrar los jobs ATP acá (`parsers/clientes.py` + namespace `EST/` de credenciales)
+- [x] Suite de parsers propia (`parsers/`) + ícono de escritorio que arranca todo
+- [x] Job que lleva la DJ al portal de la provincia (`dj_a_dgr.py`) — no presenta
 - [ ] Cargar los vencimientos de ARCA desde los jobs de la suite
 - [ ] Importar extractos bancarios desde los parsers (hoy el alta es manual o por lote vía API)
 - [ ] Login del estudio y permisos por contador
