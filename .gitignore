@@ -1,4 +1,9 @@
+# Nada de esto sale de la maquina del estudio:
 .env
 *.sqlite3
-__pycache__/
 credentials.json
+token.pickle
+*_storage_*.json
+atp_storage_*.json
+__pycache__/
+*.log
