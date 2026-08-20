@@ -79,8 +79,9 @@ adivinar rompe la cuenta corriente en silencio.
 - [x] Probado de punta a punta: 53/53 checks desde base limpia
 - [x] Suite de parsers propia (`parsers/`) + ícono de escritorio que arranca todo
 - [x] Job que lleva la DJ al portal de la provincia (`dj_a_dgr.py`) — no presenta
+- [ ] Cargador de Mis Comprobantes de ARCA → facturas
 - [ ] Cargar los vencimientos de ARCA desde los jobs de la suite
-- [ ] Importar extractos bancarios desde los parsers (hoy el alta es manual o por lote vía API)
+- [x] **Cargador de extractos** (`parsers/cargar_extracto.py`) — CSV/XLSX de cualquier banco, valida la cadena de saldos, idempotente
 - [ ] Login del estudio y permisos por contador
 
 ## Dónde corre

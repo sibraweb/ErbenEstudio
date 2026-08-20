@@ -66,6 +66,14 @@ JOBS = {
                 "la grilla de ATP. NO presenta: eso lo hace la persona.",
         "args": ["--alias", "--periodo"],
     },
+    "cargar_extracto": {
+        "archivo": "cargar_extracto.py", "propio": True,
+        "titulo": "Cargar un extracto al sistema",
+        "rubro": "bancos", "fuente": None, "atendido": False,
+        "desc": "CSV o XLSX del banco -> movimientos. Valida la cadena de saldos "
+                "y no duplica si se vuelve a cargar el mismo mes.",
+        "args": ["--alias", "--cuenta", "--archivo"],
+    },
     "arca_comprobantes": {
         "archivo": "mis_comprobantes.py", "propio": False,
         "titulo": "ARCA — Mis Comprobantes",

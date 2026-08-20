@@ -108,6 +108,47 @@ def filas(cur):
     return [dict(f) for f in cur.fetchall()]
 
 
+def _huella_movimiento(fecha, importe, descripcion, referencia):
+    """La huella de un movimiento del extracto.
+
+    ⚠ NO entra el SALDO, y es a propósito. El ERP lo incluía y eso ataba la
+    fila a su POSICIÓN en la cadena: bastaba un asiento retroactivo del banco
+    para que todos los saldos siguientes cambiaran y, al reimportar, entrara
+    duplicada toda la cola del mes. La huella describe el movimiento, no dónde
+    quedó parado."""
+    import hashlib
+    crudo = "|".join([
+        (fecha or "")[:10],
+        f"{importe:.2f}",
+        re.sub(r"\s+", " ", (descripcion or "")).strip().upper(),
+        (referencia or "").strip().upper(),
+    ])
+    return hashlib.sha1(crudo.encode("utf-8")).hexdigest()[:16]
+
+
+def _migrar(con):
+    """Cambios de esquema sobre una base que ya existe. Se corre en cada
+    arranque: barato y evita que una instalación vieja quede rota en silencio."""
+    cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
+    if "huella" in cols:
+        return
+    print("  migrando: doble llave (huella + ordinal) en movimientos_banco…")
+    con.execute("ALTER TABLE movimientos_banco ADD COLUMN huella TEXT NOT NULL DEFAULT ''")
+    con.execute("ALTER TABLE movimientos_banco ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0")
+    vistos = {}
+    for m in con.execute(
+            "SELECT id, cliente_id, cuenta_id, fecha, importe, descripcion, referencia "
+            "FROM movimientos_banco ORDER BY id").fetchall():
+        h = _huella_movimiento(m["fecha"], m["importe"], m["descripcion"], m["referencia"])
+        clave = (m["cliente_id"], m["cuenta_id"], h)
+        con.execute("UPDATE movimientos_banco SET huella=?, ordinal=? WHERE id=?",
+                    (h, vistos.get(clave, 0), m["id"]))
+        vistos[clave] = vistos.get(clave, 0) + 1
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_movb_llave "
+                "ON movimientos_banco(cliente_id, cuenta_id, huella, ordinal)")
+    con.commit()
+
+
 def crear_y_sembrar():
     """Crea la base si no existe y la siembra con los datos REALES del
     relevamiento de ATP (2026-08-17). Nada inventado: todo salió de las
@@ -115,6 +156,7 @@ def crear_y_sembrar():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = db()
     if con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='clientes'").fetchone():
+        _migrar(con)
         con.close()
         return
     con.executescript(ESQUEMA.read_text(encoding="utf-8"))
@@ -555,9 +597,13 @@ def api_movimientos():
 
 @app.post("/api/c/movimientos")
 def api_movimientos_alta():
-    """Alta de movimientos: uno suelto o una tanda (lista en `movimientos`),
-    que es como los va a dejar el job del banco. El UNIQUE de la tabla hace de
-    anti-duplicado: cargar dos veces el mismo extracto no duplica nada."""
+    """Alta de movimientos: uno suelto o una tanda (`movimientos`), que es como
+    los deja el cargador de extractos.
+
+    ES IDEMPOTENTE, y esa es la parte que importa: volver a cargar el mismo
+    extracto no duplica nada. La llave es doble —huella + ordinal— y la calcula
+    el servidor, no el que manda los datos.
+    """
     con = db()
     cli, err = cliente_activo(con)
     if err:
@@ -569,16 +615,35 @@ def api_movimientos_alta():
     if not _de_este_cliente(con, "cuentas_bancarias", cuenta_id, cli["id"]):
         con.close()
         return jsonify({"error": "cuenta inexistente para este cliente"}), 400
+
     nuevos = repetidos = 0
+    vistos = {}          # huella -> cuántas veces vino ya EN ESTA TANDA
     for m in lote:
+        fecha = (m.get("fecha") or _hoy())[:10]
+        importe = _n(m.get("importe"))
+        desc = (m.get("descripcion") or "").strip()
+        ref = (m.get("referencia") or "").strip()
+        huella = _huella_movimiento(fecha, importe, desc, ref)
+        # El ordinal desempata los repetidos legítimos: dos débitos idénticos el
+        # mismo día existen y los dos tienen que entrar.
+        #
+        # ⚠ Se cuenta la posición DENTRO DE ESTA TANDA, arrancando de cero — no
+        # desde lo que ya hay guardado. Contando desde lo guardado, reimportar
+        # el mismo extracto le daba ordinales nuevos a los gemelos (0,1 → 2,3)
+        # y entraban duplicados: justo lo que la llave existe para evitar.
+        # Empezando de cero, el par (huella, ordinal) ya existe y el UNIQUE lo
+        # rebota, mientras que un tercer gemelo de verdad sí entra.
+        ordinal = vistos.get(huella, 0)
+        vistos[huella] = ordinal + 1
         try:
             con.execute(
                 "INSERT INTO movimientos_banco (cliente_id, cuenta_id, fecha, descripcion, importe, saldo, "
-                " referencia, origen, cuit_contraparte) VALUES (?,?,?,?,?,?,?,?,?)",
-                (cli["id"], cuenta_id, (m.get("fecha") or _hoy())[:10], m.get("descripcion"),
-                 _n(m.get("importe")), None if m.get("saldo") in (None, "") else _n(m.get("saldo")),
-                 m.get("referencia"), m.get("origen") or "manual",
-                 re.sub(r"\D", "", m.get("cuit_contraparte") or "") or None))
+                " referencia, origen, cuit_contraparte, huella, ordinal) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (cli["id"], cuenta_id, fecha, desc or None, importe,
+                 None if m.get("saldo") in (None, "") else _n(m.get("saldo")),
+                 ref or None, m.get("origen") or "manual",
+                 re.sub(r"\D", "", m.get("cuit_contraparte") or "") or None,
+                 huella, ordinal))
             nuevos += 1
         except sqlite3.IntegrityError:
             repetidos += 1

@@ -154,7 +154,17 @@ CREATE TABLE movimientos_banco (
     cuit_contraparte TEXT,
     pago_id      INTEGER,
     conciliado   INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (cliente_id, cuenta_id, fecha, importe, referencia)
+    -- LA DOBLE LLAVE contra duplicados al reimportar un extracto.
+    -- `huella` = hash de (fecha, importe, descripcion, referencia).
+    -- ⚠ NO incluye el SALDO, y eso es deliberado: el ERP lo incluía y ataba
+    -- la fila a su posición en la cadena, así que un asiento retroactivo del
+    -- banco corría todos los saldos y al reimportar entraba duplicada TODA la
+    -- cola del mes.
+    -- `ordinal` distingue los repetidos legítimos: dos débitos idénticos el
+    -- mismo día existen, y con la huella sola el segundo se perdería.
+    huella       TEXT NOT NULL DEFAULT '',
+    ordinal      INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (cliente_id, cuenta_id, huella, ordinal)
 );
 CREATE INDEX ix_movb_cliente ON movimientos_banco(cliente_id, fecha);
 CREATE INDEX ix_movb_pend ON movimientos_banco(cliente_id, conciliado);
