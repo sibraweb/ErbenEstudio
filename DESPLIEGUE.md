@@ -81,6 +81,66 @@ a localhost desde https, hay dos salidas, en este orden:
 No hay que atarse a la nube: **el ícono del escritorio funciona sin internet**,
 y esa es la garantía de que el estudio nunca queda sin poder trabajar.
 
+## Plan de contingencia — si Chrome corta el acceso a localhost
+
+(Dictado por Juan, 2026-08-20: *"o lo hacemos correr local o ponemos el
+servidor en Oracle y la base en Supabase"*. Las dos son válidas, pero **no son
+equivalentes: cambian dónde vive el dato**, que es la decisión de fondo.)
+
+### Precisión: qué es lo que se puede romper
+No es que Chrome bloquee https. Lo que puede endurecer es **una página https
+llamando a `http://localhost`** (Private Network Access). La pantalla sirve
+igual; lo que deja de contestar es la API local.
+
+### Salida A — servir la pantalla desde el equipo (lo que ya funciona)
+Cuesta **cero**: es el ícono del escritorio. Vercel queda como demo/vidriera.
+
+| | |
+|---|---|
+| Se pierde | entrar desde cualquier lado |
+| Se conserva | los datos nunca viajan · funciona sin internet · una sola pieza |
+
+### Salida B — server en Oracle + base en Supabase
+Da acceso desde cualquier lado y respaldo automático, pero hay que mirar dos
+cosas antes de elegirla.
+
+**1. Los parsers NO se pueden mudar.** Necesitan un navegador con la sesión y
+las credenciales del cliente, y login atendido (reCAPTCHA en ATP, 2FA en los
+bancos). Aunque el server esté en Oracle y la base en Supabase, **sigue
+haciendo falta el agente local** para scrapear y para llevar la DJ al portal.
+O sea: B no reemplaza al equipo local, le **suma** dos piezas más.
+
+```
+      A: navegador ─→ equipo local ─→ base local          (1 pieza)
+      B: navegador ─→ Oracle ─→ Supabase
+                          ↑
+                    agente local (parsers)                (3 piezas)
+```
+
+**2. Los datos fiscales de terceros pasan a vivir en tu infraestructura.** Hoy
+la respuesta a "¿dónde están los datos de mis clientes?" es *"en tu computadora,
+no salen de ahí"*. Con B es *"en un servidor nuestro"*. Es defendible, pero es
+otra conversación con el cliente y otra responsabilidad.
+
+**La buena noticia de B**: migrar la base ya está resuelto. El ERP hizo el mismo
+salto con `ERP/api/pgcompat.py` —un adaptador que imita la API de `sqlite3` que
+el código realmente usa— y este server está en las mismas condiciones: **109
+llamadas a la base y un solo `db()`**. Se cambia un archivo, no se reescriben
+109 consultas. (Habría que tocar además los 6 `except sqlite3.IntegrityError`,
+que el ERP resolvió con una tupla de excepciones de los dos motores.)
+
+### Recomendación
+**A por defecto.** Un estudio contable trabaja en su oficina, y la simplicidad
+de una sola pieza vale más que entrar desde el celular.
+
+**B solo si aparece un requisito real**: varios contadores en lugares distintos,
+trabajo remoto sostenido, o que el estudio no quiera depender de una máquina
+propia. Ahí el costo extra se justifica.
+
+**No hay que decidir hoy.** El código no se pinta en una esquina: el front ya
+sabe apuntar a cualquier dirección (botón *Cambiar la dirección del equipo*) y
+la base tiene un solo punto de entrada.
+
 ## Pasos para publicar (pendiente de hacer)
 
 1. Crear el repo **privado** `erben-estudio` en GitHub.
