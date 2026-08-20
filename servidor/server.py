@@ -916,6 +916,43 @@ def _candidatos(con, cid, mov):
     return out
 
 
+def _pago_intermedio(con, cid, mov, factura_id):
+    """Fabrica el RECIBO que falta entre el banco y la factura.
+
+    Regla de la definición de Tesorería: *toda aplicación fabrica el documento
+    intermedio* — movimiento → PAGO → imputación → factura. Un movimiento
+    conciliado "a la factura" sin recibo deja la cuenta corriente mintiendo: el
+    banco figura explicado y el proveedor sigue figurando impago. Pasó acá
+    mismo la primera vez que se miró la cuenta corriente (2026-08-18).
+
+    Devuelve el id del pago creado.
+    """
+    f = con.execute(
+        "SELECT f.*, e.cuit, e.id AS eid FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+        "WHERE f.id=?", (factura_id,)).fetchone()
+    aplicado = _n(con.execute(
+        "SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones WHERE factura_id=?",
+        (factura_id,)).fetchone()[0])
+    # lo que se aplica es lo menor entre lo que trae el banco y lo que falta
+    importe = min(abs(mov["importe"]), round(abs(f["total"]) - aplicado, 2))
+    direccion = "cobro" if f["mov"] == "venta" else "pago"
+    cur = con.execute(
+        "INSERT INTO pagos (cliente_id, entidad_id, direccion, fecha, numero, total, nota) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (cid, f["eid"], direccion, mov["fecha"], f"AUTO-{mov['id']}", importe,
+         "recibo generado por la conciliación automática"))
+    pago_id = cur.lastrowid
+    con.execute(
+        "INSERT INTO pago_medios (pago_id, medio, importe, movimiento_id) VALUES (?,'transferencia',?,?)",
+        (pago_id, importe, mov["id"]))
+    con.execute("INSERT INTO pago_aplicaciones (pago_id, factura_id, importe) VALUES (?,?,?)",
+                (pago_id, factura_id, importe))
+    # y el banco se nutre: CUIT de la contraparte + el recibo reción creado
+    con.execute("UPDATE movimientos_banco SET cuit_contraparte=?, pago_id=? WHERE id=?",
+                (f["cuit"], pago_id, mov["id"]))
+    return pago_id
+
+
 @app.get("/api/c/conciliacion")
 def api_conciliacion_ver():
     """Los movimientos sin conciliar con sus candidatos. `unico=True` es lo
@@ -978,11 +1015,8 @@ def api_conciliacion_auto():
                 con.execute("UPDATE movimientos_banco SET cuit_contraparte=? WHERE id=?",
                             (ch["cuit_librador"], mov["id"]))
         else:
-            f = con.execute(
-                "SELECT f.*, e.cuit FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
-                "WHERE f.id=?", (oid,)).fetchone()
-            # el banco se nutre: le queda el CUIT de la contraparte
-            con.execute("UPDATE movimientos_banco SET cuit_contraparte=? WHERE id=?", (f["cuit"], mov["id"]))
+            pago_id = _pago_intermedio(con, cid, mov, oid)
+            con.execute("UPDATE conciliaciones SET pago_id=? WHERE movimiento_id=?", (pago_id, mov["id"]))
         hechas.append({"movimiento_id": mov["id"], "tipo": tipo, "id": oid, "motivo": motivo})
     con.commit()
     con.close()
@@ -1011,18 +1045,29 @@ def api_conciliacion_manual():
     if not obj:
         con.close()
         return jsonify({"error": f"{tipo} inexistente para este cliente"}), 400
+    # Contra una factura pasa lo mismo que en la automática: hace falta el
+    # recibo intermedio, si no la cuenta corriente sigue mostrando la deuda.
+    pago_id = obj["id"] if tipo == "pago" else None
+    if tipo == "factura":
+        pago_id = _pago_intermedio(con, cli["id"], mov, obj["id"])
+    elif tipo == "cheque":
+        con.execute("UPDATE cheques SET estado=? WHERE id=?",
+                    ("debitado" if obj["origen"] == "emitido" else "cobrado", obj["id"]))
+        if obj["cuit_librador"]:
+            con.execute("UPDATE movimientos_banco SET cuit_contraparte=? WHERE id=?",
+                        (obj["cuit_librador"], mov["id"]))
     con.execute(
         "INSERT OR REPLACE INTO conciliaciones (cliente_id, movimiento_id, tipo, cheque_id, factura_id, pago_id, "
         " metodo, motivo, fecha) VALUES (?,?,?,?,?,?,'manual',?,?)",
         (cli["id"], mov["id"], tipo,
          obj["id"] if tipo == "cheque" else None,
          obj["id"] if tipo == "factura" else None,
-         obj["id"] if tipo == "pago" else None,
+         pago_id,
          b.get("motivo") or "conciliado a mano", _hoy()))
     con.execute("UPDATE movimientos_banco SET conciliado=1 WHERE id=?", (mov["id"],))
     con.commit()
     con.close()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "pago_id": pago_id})
 
 
 # ══ IMPUESTOS ═══════════════════════════════════════════════════════════════
@@ -1202,6 +1247,302 @@ def api_djs_guardar():
     con.commit()
     con.close()
     return jsonify({"ok": True})
+
+
+# ══ TESORERÍA ══════════════════════════════════════════════════════════════
+# La casa nueva de Tesorería, misma forma que la del ERP
+# (SIBRA_SERVER/MDs/TESORERIA__DEFINICION.md §6.0 y §9): Cuenta Corriente ·
+# Posición hoy · Vencimientos · Documentos.
+#
+# Diferencia estructural del estudio (Juan, 2026-08-18): allá cada vista tiene
+# chips por empresa con opción ALL; acá NO existe el ALL — el cliente se elige
+# arriba una sola vez y todo cuelga de él.
+#
+# La REGLA FUNDAMENTAL del módulo (§1) es la que manda: antes de dejar crear un
+# medio de pago, la pantalla muestra lo que YA SE SABE de esa entidad — sus NC,
+# sus cheques en cartera y los movimientos del banco con su CUIT sin aplicar.
+# Eso es el bloque SUGERENCIAS de la cuenta corriente.
+
+@app.get("/api/c/tesoreria/cuentacorriente")
+def api_cc():
+    """A quién le debo y quién me debe. Los dos mayores separados: netear
+    compras contra ventas esconde que a alguien le debés."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    r = filas(con.execute(
+        "SELECT e.id, e.cuit, m.razon_social, e.alias_interno, "
+        "  COALESCE((SELECT SUM(f.total) FROM facturas f WHERE f.entidad_id=e.id AND f.mov='compra'),0) AS comprado, "
+        "  COALESCE((SELECT SUM(f.total) FROM facturas f WHERE f.entidad_id=e.id AND f.mov='venta'),0) AS vendido, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id "
+        "            WHERE f.entidad_id=e.id AND f.mov='compra'),0) AS pagado, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id "
+        "            WHERE f.entidad_id=e.id AND f.mov='venta'),0) AS cobrado "
+        "FROM entidades_cliente e JOIN maestro_entidades m ON m.cuit=e.cuit "
+        "WHERE e.cliente_id=? ORDER BY m.razon_social", (cli["id"],)))
+    for x in r:
+        x["le_debo"] = round(x["comprado"] - x["pagado"], 2)
+        x["me_debe"] = round(x["vendido"] - x["cobrado"], 2)
+        x["estado"] = ("saldado" if abs(x["le_debo"]) < 0.01 and abs(x["me_debe"]) < 0.01
+                       else "le debés" if x["le_debo"] > 0.01 and x["me_debe"] <= 0.01
+                       else "te debe" if x["me_debe"] > 0.01 and x["le_debo"] <= 0.01
+                       else "cruzado")
+    con.close()
+    return jsonify(r)
+
+
+@app.get("/api/c/tesoreria/entidad/<int:eid>")
+def api_cc_detalle(eid):
+    """El mayor de una entidad + SUGERENCIAS: la plata real de esa entidad que
+    todavía no entró al circuito (§A2 de la definición). Es la regla
+    fundamental hecha pantalla — mostrar antes de dejar crear."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    ent = _de_este_cliente(con, "entidades_cliente", eid, cli["id"])
+    if not ent:
+        con.close()
+        return jsonify({"error": "entidad inexistente para este cliente"}), 404
+
+    facturas = filas(con.execute(
+        "SELECT f.id, f.mov, f.fecha, f.tipo, f.letra, f.punto_venta, f.numero, f.total, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS pagado "
+        "FROM facturas f WHERE f.entidad_id=? ORDER BY f.fecha DESC", (eid,)))
+    for f in facturas:
+        f["saldo"] = round(f["total"] - f["pagado"], 2)
+    pagos = filas(con.execute(
+        "SELECT id, direccion, fecha, numero, total FROM pagos WHERE entidad_id=? "
+        "ORDER BY fecha DESC", (eid,)))
+
+    # ── SUGERENCIAS ──
+    # 1. Notas de crédito con saldo: se imputan como pago, van primero.
+    ncs = [f for f in facturas if (f["tipo"] or "").upper() == "NC" and abs(f["saldo"]) > 0.01]
+    # 2. Cheques en cartera librados por esta entidad.
+    cheques = filas(con.execute(
+        "SELECT id, numero, banco, fecha_pago, importe FROM cheques "
+        "WHERE cliente_id=? AND estado='en_cartera' AND cuit_librador=?",
+        (cli["id"], ent["cuit"])))
+    # 3. Movimientos del banco con su CUIT que nadie aplicó todavía.
+    movs = filas(con.execute(
+        "SELECT m.id, m.fecha, m.descripcion, m.importe, c.banco FROM movimientos_banco m "
+        "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "WHERE m.cliente_id=? AND m.cuit_contraparte=? AND m.pago_id IS NULL",
+        (cli["id"], ent["cuit"])))
+    con.close()
+    return jsonify({
+        "entidad": {"id": ent["id"], "cuit": ent["cuit"],
+                    "es_proveedor": ent["es_proveedor"], "es_cliente": ent["es_cliente"]},
+        "facturas": facturas, "pagos": pagos,
+        "sugerencias": {"notas_credito": ncs, "cheques_cartera": cheques,
+                        "movimientos_sin_aplicar": movs},
+    })
+
+
+def _lineas_que_vienen(con, cid):
+    """Todo lo que vence, de todas las fuentes, en una sola lista ordenada.
+    A pagar en negativo, a cobrar en positivo — así el total dice de verdad
+    cómo queda la caja."""
+    lineas = []
+    for ch in con.execute(
+            "SELECT * FROM cheques WHERE cliente_id=? AND estado IN ('en_cartera','emitido','depositado')",
+            (cid,)):
+        cobra = ch["origen"] == "recibido"
+        lineas.append({
+            "fecha": ch["fecha_pago"], "fuente": "cheque",
+            "detalle": f"Cheque {ch['origen']} Nº{ch['numero']}" + (f" · {ch['banco']}" if ch["banco"] else ""),
+            "importe": ch["importe"] if cobra else -ch["importe"],
+            "estado": ch["estado"], "ref": {"tipo": "cheque", "id": ch["id"]}})
+    for f in con.execute(
+            "SELECT f.*, m.razon_social, "
+            "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS pagado "
+            "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+            "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE f.cliente_id=?", (cid,)):
+        saldo = round(f["total"] - f["pagado"], 2)
+        if abs(saldo) < 0.01:
+            continue
+        cobra = f["mov"] == "venta"
+        lineas.append({
+            "fecha": f["fecha"], "fuente": "factura",
+            "detalle": f"{f['mov'].capitalize()} {f['tipo']} {f['punto_venta'] or ''}-{f['numero'] or ''} "
+                       f"· {f['razon_social']}",
+            "importe": saldo if cobra else -saldo,
+            "estado": "impaga", "ref": {"tipo": "factura", "id": f["id"]}})
+    for v in con.execute(
+            "SELECT * FROM vencimientos WHERE cliente_id=? AND estado<>'pagado'", (cid,)):
+        lineas.append({
+            "fecha": v["fecha"], "fuente": v["fuente"],
+            "detalle": f"{v['impuesto']} {v['periodo']}",
+            "importe": -(v["importe"] or 0), "estado": v["estado"],
+            "liquidado": v["importe"] is not None,
+            "ref": {"tipo": "vencimiento", "id": v["id"]}})
+    lineas.sort(key=lambda x: x["fecha"] or "")
+    return lineas
+
+
+@app.get("/api/c/tesoreria/posicion")
+def api_posicion():
+    """Cómo está la caja HOY y qué se viene. Solo lo LIQUIDADO entra en los
+    números; las DJs sin monto viven en Vencimientos (§9 de la definición)."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    cuentas = filas(con.execute(
+        "SELECT c.id, c.banco, c.tipo, c.numero, c.moneda, "
+        "  COALESCE((SELECT SUM(m.importe) FROM movimientos_banco m WHERE m.cuenta_id=c.id),0) AS saldo, "
+        "  (SELECT MAX(m.fecha) FROM movimientos_banco m WHERE m.cuenta_id=c.id) AS ultimo "
+        "FROM cuentas_bancarias c WHERE c.cliente_id=? AND c.activa=1 ORDER BY c.banco", (cid,)))
+    uno = lambda q, a: _n(con.execute(q, a).fetchone()[0])
+    lineas = _lineas_que_vienen(con, cid)
+    hoy = _hoy()
+    kpis = {
+        "bancos": round(sum(c["saldo"] for c in cuentas), 2),
+        "cheques_cartera": uno("SELECT COALESCE(SUM(importe),0) FROM cheques WHERE cliente_id=? "
+                               "AND estado='en_cartera'", (cid,)),
+        "cheques_a_pagar": uno("SELECT COALESCE(SUM(importe),0) FROM cheques WHERE cliente_id=? "
+                               "AND origen='emitido' AND estado='emitido'", (cid,)),
+        "le_debo": uno("SELECT COALESCE(SUM(f.total),0) - COALESCE((SELECT SUM(a.importe) "
+                       "  FROM pago_aplicaciones a JOIN facturas f2 ON f2.id=a.factura_id "
+                       "  WHERE f2.cliente_id=? AND f2.mov='compra'),0) "
+                       "FROM facturas f WHERE f.cliente_id=? AND f.mov='compra'", (cid, cid)),
+        "me_deben": uno("SELECT COALESCE(SUM(f.total),0) - COALESCE((SELECT SUM(a.importe) "
+                        "  FROM pago_aplicaciones a JOIN facturas f2 ON f2.id=a.factura_id "
+                        "  WHERE f2.cliente_id=? AND f2.mov='venta'),0) "
+                        "FROM facturas f WHERE f.cliente_id=? AND f.mov='venta'", (cid, cid)),
+        "impuestos_liquidados": round(sum(-l["importe"] for l in lineas
+                                          if l["fuente"] != "cheque" and l["fuente"] != "factura"
+                                          and l.get("liquidado")), 2),
+    }
+    con.close()
+    return jsonify({
+        "cuentas": cuentas, "kpis": kpis,
+        "vencido": [l for l in lineas if (l["fecha"] or "") < hoy],
+        "lineas": lineas,
+        "impuestos": [l for l in lineas if l["ref"]["tipo"] == "vencimiento"],
+    })
+
+
+@app.get("/api/c/tesoreria/vencimientos")
+def api_calendario():
+    """El calendario completo — cheques, facturas e impuestos, liquidados o
+    no. Es la vista que la Posición deja afuera a propósito."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    lineas = _lineas_que_vienen(con, cli["id"])
+    con.close()
+    return jsonify(lineas)
+
+
+@app.get("/api/c/tesoreria/documentos")
+def api_documentos():
+    """LA VISTA ÚNICA: todo lo que el sistema genera y toma, con su estado,
+    lo aplicado, el saldo y LA CADENA debajo.
+
+    La escalera (§A1): FACTURA se aplica con PAGO · PAGO con efectivo/banco/
+    cheques · CHEQUE y BANCO con RECIBOS. Cada fila dice en qué escalón está y
+    qué le falta — la medida de completitud es cuántos eslabones tiene."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    docs = []
+
+    for f in con.execute(
+            "SELECT f.*, m.razon_social, "
+            "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS aplicado "
+            "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+            "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE f.cliente_id=? ORDER BY f.fecha DESC", (cid,)):
+        cadena = filas(con.execute(
+            "SELECT p.id, p.numero, p.fecha, p.direccion, a.importe FROM pago_aplicaciones a "
+            "JOIN pagos p ON p.id=a.pago_id WHERE a.factura_id=?", (f["id"],)))
+        saldo = round(f["total"] - f["aplicado"], 2)
+        docs.append({
+            "clase": "factura", "id": f["id"], "fecha": f["fecha"],
+            "detalle": f"{f['mov'].capitalize()} {f['tipo']} {f['punto_venta'] or ''}-{f['numero'] or ''}",
+            "entidad": f["razon_social"], "total": f["total"], "aplicado": f["aplicado"],
+            "saldo": saldo, "flujo": "ingreso" if f["mov"] == "venta" else "egreso",
+            "estado": "saldada" if abs(saldo) < 0.01 else ("parcial" if f["aplicado"] else "sin aplicar"),
+            "se_aplica_con": "PAGO",
+            "cadena": [f"{c['direccion']} {c['numero'] or c['id']} · {plata_txt(c['importe'])}"
+                       for c in cadena]})
+
+    for p in con.execute(
+            "SELECT p.*, m.razon_social FROM pagos p JOIN entidades_cliente e ON e.id=p.entidad_id "
+            "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE p.cliente_id=? ORDER BY p.fecha DESC", (cid,)):
+        medios = filas(con.execute(
+            "SELECT medio, importe, movimiento_id, cheque_id FROM pago_medios WHERE pago_id=?", (p["id"],)))
+        aplicado = _n(con.execute(
+            "SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones WHERE pago_id=?", (p["id"],)).fetchone()[0])
+        docs.append({
+            "clase": "pago", "id": p["id"], "fecha": p["fecha"],
+            "detalle": ("Cobranza " if p["direccion"] == "cobro" else "Orden de pago ") + (p["numero"] or f"#{p['id']}"),
+            "entidad": p["razon_social"], "total": p["total"], "aplicado": aplicado,
+            "saldo": round(p["total"] - aplicado, 2),
+            "flujo": "ingreso" if p["direccion"] == "cobro" else "egreso",
+            "estado": "a cuenta" if aplicado < p["total"] - 0.01 else "imputado",
+            "se_aplica_con": "efectivo / banco / cheques",
+            "cadena": [f"{m['medio']} {plata_txt(m['importe'])}" for m in medios]})
+
+    for ch in con.execute(
+            "SELECT ch.*, m.razon_social AS librador FROM cheques ch "
+            "LEFT JOIN maestro_entidades m ON m.cuit=ch.cuit_librador "
+            "WHERE ch.cliente_id=? ORDER BY ch.fecha_pago DESC", (cid,)):
+        cadena = []
+        if ch["pago_origen_id"]:
+            cadena.append(f"vino en la cobranza #{ch['pago_origen_id']}")
+        if ch["pago_uso_id"]:
+            cadena.append(f"usado en el pago #{ch['pago_uso_id']}")
+        conc = con.execute("SELECT movimiento_id FROM conciliaciones WHERE cheque_id=?", (ch["id"],)).fetchone()
+        if conc:
+            cadena.append(f"conciliado con el movimiento #{conc['movimiento_id']}")
+        docs.append({
+            "clase": "cheque", "id": ch["id"], "fecha": ch["fecha_pago"],
+            "detalle": f"Cheque {ch['origen']} Nº{ch['numero']}",
+            "entidad": ch["librador"] or "—", "total": ch["importe"],
+            "aplicado": None, "saldo": None,
+            "flujo": "ingreso" if ch["origen"] == "recibido" else "egreso",
+            "estado": ch["estado"], "se_aplica_con": "RECIBO", "cadena": cadena})
+
+    for mv in con.execute(
+            "SELECT m.*, c.banco, co.tipo AS conc_tipo, co.motivo FROM movimientos_banco m "
+            "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+            "LEFT JOIN conciliaciones co ON co.movimiento_id=m.id "
+            "WHERE m.cliente_id=? ORDER BY m.fecha DESC", (cid,)):
+        cadena = []
+        if mv["cuit_contraparte"]:
+            cadena.append(f"CUIT {mv['cuit_contraparte']}")
+        if mv["pago_id"]:
+            cadena.append(f"recibo #{mv['pago_id']}")
+        if mv["motivo"]:
+            cadena.append(mv["motivo"])
+        docs.append({
+            "clase": "banco", "id": mv["id"], "fecha": mv["fecha"],
+            "detalle": f"{mv['banco']} · {mv['descripcion'] or 'sin descripción'}",
+            "entidad": mv["cuit_contraparte"] or "—", "total": mv["importe"],
+            "aplicado": None, "saldo": None,
+            "flujo": "ingreso" if mv["importe"] > 0 else "egreso",
+            "estado": "conciliado" if mv["conciliado"] else "sin registrar",
+            "se_aplica_con": "RECIBO", "cadena": cadena})
+
+    docs.sort(key=lambda d: d["fecha"] or "", reverse=True)
+    con.close()
+    return jsonify(docs)
+
+
+def plata_txt(n):
+    """Importe en texto para las cadenas de la vista Documentos."""
+    return "$" + f"{n:,.2f}".replace(",", "@").replace(".", ",").replace("@", ".")
 
 
 if __name__ == "__main__":

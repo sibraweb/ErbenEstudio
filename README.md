@@ -21,14 +21,19 @@ También está en `.claude/launch.json` como `erben-estudio`.
 
 ## Los módulos
 
+> **El filtro de empresa vive en la fila de arriba.** Se elige una y TODOS los
+> módulos filtran por ella; cambiarla refiltra el módulo en el que estás sin
+> sacarte de él. No es multiempresa como nuestro ERP: no existe la opción
+> "todas", todo lo que se hace es de una sola empresa.
+
 | Módulo | Qué hace |
 |---|---|
-| **Tablero** | ventas/compras del mes, cheques en cartera, banco sin conciliar, vencimientos, y la foto del portal que dejó el job de ATP |
+| **Tesorería** | la casa nueva, igual que la del ERP: **Cuenta corriente** (le debo / me debe, con el bloque SUGERENCIAS), **Posición hoy**, **Vencimientos** y **Documentos** (la vista única con la escalera) |
 | **Facturas** | compras y ventas con IVA discriminado; las ventas llevan el **par actividad+alícuota** de IIBB (default: la actividad principal) |
 | **Impuestos** | vencimientos (ARCA y provincias) + **liquidación de IVA** del período: débito − crédito − percepciones |
 | **DJ IIBB** | base por actividad del período, con el **control Σ bases == Σ ventas**: si no cierra, no se presenta |
 | **Bancos** | cuentas y extracto; los movimientos se van completando con CUIT y recibo |
-| **Cheques** | recibidos (entran **solo por una cobranza**; se depositan o endosan) y emitidos |
+| **Cheques** | solo dos clases: **cobrados** (entran únicamente por una cobranza; se depositan o endosan) y **emitidos**. No hay "me dieron" ni "me prestaron" |
 | **Pagos** | cancela facturas con movimientos de banco, cheques o efectivo |
 | **Conciliación** | automática cuando hay **un único** candidato; con dos o más decide una persona |
 | **Entidades** | la relación de este cliente, sobre el maestro único por CUIT |
@@ -58,7 +63,8 @@ adivinar rompe la cuenta corriente en silencio.
 - [x] Repo, arquitectura y decisión de entidades (maestro único + relaciones)
 - [x] Esquema completo (`servidor/esquema.sql`) y API (`servidor/server.py`)
 - [x] App con selector de cliente y los 9 módulos (`sistema/index.html`)
-- [x] Probado de punta a punta: 25/25 checks desde base limpia
+- [x] Módulo Tesorería (4 pestañas) y filtro de empresa en la fila de arriba
+- [x] Probado de punta a punta: 43/43 checks desde base limpia
 - [ ] Migrar los jobs ATP acá (`parsers/clientes.py` + namespace `EST/` de credenciales)
 - [ ] Cargar los vencimientos de ARCA desde los jobs de la suite
 - [ ] Importar extractos bancarios desde los parsers (hoy el alta es manual o por lote vía API)

@@ -21,52 +21,36 @@ body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacS
 a{color:inherit;text-decoration:none}
 button,input,select,textarea{font:inherit;color:inherit}
 
-/* ── marca ── */
-.logo{display:flex;align-items:center;gap:10px}
+.logo{display:flex;align-items:center;gap:10px;flex-shrink:0}
 .logo-mark{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--ac),#0b7f5c);
   display:grid;place-items:center;font-weight:800;color:#fff;font-size:15px;letter-spacing:-.5px;flex-shrink:0}
 .logo-txt{line-height:1}
-.logo-txt b{font-size:16px;font-weight:800;letter-spacing:.01em}
+.logo-txt b{font-size:16px;font-weight:800}
 .logo-txt span{display:block;font-size:9px;letter-spacing:.3em;color:var(--mut);margin-top:3px;text-transform:uppercase}
 
-/* ── portada: elegir cliente ── */
-#portada{min-height:100vh;display:grid;place-items:center;padding:32px 16px}
-.portada-box{width:100%;max-width:640px}
-.portada-box h1{font-size:30px;font-weight:800;margin:22px 0 6px}
-.portada-box p{color:var(--txt2);margin-bottom:24px}
-.aviso{background:var(--bg2);border:1px solid var(--bor);border-left:3px solid var(--ac);
-  border-radius:8px;padding:12px 14px;font-size:12.5px;color:var(--txt2);margin-bottom:22px}
-.cli-card{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--bg2);
-  border:1px solid var(--bor);border-radius:10px;padding:16px 18px;margin-bottom:10px;cursor:pointer;transition:.15s}
-.cli-card:hover{border-color:var(--ac);background:var(--hover);transform:translateX(3px)}
-.cli-card b{font-size:16px}
-.cli-card small{display:block;color:var(--mut);font-size:12px;margin-top:3px}
-.chip{display:inline-block;background:var(--bg3);border:1px solid var(--bor);border-radius:20px;
-  padding:2px 10px;font-size:11px;color:var(--txt2)}
-
-/* ── shell ── */
+/* ── la fila de arriba: el filtro de empresa manda sobre todo ── */
 header{background:var(--bg2);border-bottom:1px solid var(--bor2);padding:10px 16px;position:sticky;top:0;z-index:50}
-.hd{max-width:1500px;margin:0 auto;display:flex;align-items:center;gap:16px;justify-content:space-between}
-.cli-activo{display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid var(--bor);
-  border-radius:8px;padding:6px 12px;cursor:pointer;transition:.15s}
-.cli-activo:hover{border-color:var(--ac)}
-.cli-activo b{font-size:13px}
-.cli-activo small{color:var(--mut);font-size:11px}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ac2);flex-shrink:0}
+.hd{max-width:1500px;margin:0 auto;display:flex;align-items:center;gap:14px;justify-content:space-between;flex-wrap:wrap}
+.filtro-empresa{display:flex;align-items:center;gap:9px;background:var(--bg3);border:1px solid var(--ac);
+  border-radius:9px;padding:5px 8px 5px 13px;flex:1;max-width:560px;min-width:260px}
+.filtro-empresa .et{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:.1em;flex-shrink:0}
+.filtro-empresa select{background:transparent;border:0;font-size:14.5px;font-weight:700;padding:4px 2px;
+  flex:1;min-width:0;cursor:pointer}
+.filtro-empresa select:focus{outline:0}
+.cuit-chip{font-size:11px;color:var(--mut);white-space:nowrap;flex-shrink:0}
 nav{background:var(--bg2);border-bottom:1px solid var(--bor2);padding:0 16px;overflow-x:auto}
 .nav{max-width:1500px;margin:0 auto;display:flex;gap:2px}
-.nav a{padding:11px 14px;font-size:13px;color:var(--mut);border-bottom:2px solid transparent;white-space:nowrap}
+.nav a{padding:11px 13px;font-size:13px;color:var(--mut);border-bottom:2px solid transparent;white-space:nowrap}
 .nav a:hover{color:var(--txt)}
 .nav a.on{color:var(--ac2);border-bottom-color:var(--ac)}
 main{max-width:1500px;margin:0 auto;padding:22px 16px 60px}
 h2{font-size:20px;font-weight:700;margin-bottom:4px}
 .sub{color:var(--mut);font-size:13px;margin-bottom:18px}
 
-/* ── piezas ── */
-.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(215px,1fr))}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(205px,1fr))}
 .card{background:var(--bg2);border:1px solid var(--bor);border-radius:10px;padding:15px}
 .card .k{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.07em}
-.card .v{font-size:23px;font-weight:700;margin-top:6px}
+.card .v{font-size:22px;font-weight:700;margin-top:6px}
 .card .v.sm{font-size:16px}
 .panel{background:var(--bg2);border:1px solid var(--bor);border-radius:10px;margin-bottom:16px;overflow:hidden}
 .panel-h{padding:12px 15px;border-bottom:1px solid var(--bor2);display:flex;align-items:center;
@@ -76,9 +60,10 @@ h2{font-size:20px;font-weight:700;margin-bottom:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;padding:9px 12px;font-size:11px;color:var(--mut);text-transform:uppercase;
   letter-spacing:.05em;border-bottom:1px solid var(--bor);white-space:nowrap}
-td{padding:9px 12px;border-bottom:1px solid var(--bor2)}
+td{padding:9px 12px;border-bottom:1px solid var(--bor2);vertical-align:top}
 tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--bg3)}
+tr.click{cursor:pointer}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tabla-wrap{overflow-x:auto}
 button{background:var(--ac);color:#fff;border:0;border-radius:7px;padding:8px 14px;font-size:13px;
@@ -93,18 +78,20 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--ac)}
 label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
 .f{display:grid;gap:11px;grid-template-columns:repeat(auto-fit,minmax(155px,1fr))}
 .f .full{grid-column:1/-1}
-.badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:600}
+.badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:600;white-space:nowrap}
 .b-ok{background:rgba(14,166,120,.16);color:var(--ac2)}
 .b-warn{background:rgba(224,165,58,.16);color:var(--warn)}
 .b-bad{background:rgba(224,90,74,.16);color:var(--bad)}
 .b-mut{background:var(--bg3);color:var(--mut)}
-.vacio{padding:34px 16px;text-align:center;color:var(--mut);font-size:13px}
-.tabs{display:flex;gap:2px;margin-bottom:14px;border-bottom:1px solid var(--bor)}
+.vacio{padding:32px 16px;text-align:center;color:var(--mut);font-size:13px}
+.tabs{display:flex;gap:2px;margin-bottom:14px;border-bottom:1px solid var(--bor);overflow-x:auto}
 .tabs button{background:none;color:var(--mut);border:0;border-bottom:2px solid transparent;
-  border-radius:0;padding:8px 14px;font-weight:500}
+  border-radius:0;padding:8px 14px;font-weight:500;white-space:nowrap}
 .tabs button.on{color:var(--ac2);border-bottom-color:var(--ac)}
-.pos{color:var(--ac2)} .neg{color:var(--bad)}
+.pos{color:var(--ac2)} .neg{color:var(--bad)} .amb{color:var(--warn)}
 .mini{font-size:11.5px;color:var(--mut)}
+.aviso{background:var(--bg2);border:1px solid var(--bor);border-left:3px solid var(--ac);
+  border-radius:8px;padding:12px 14px;font-size:12.5px;color:var(--txt2);margin-bottom:16px}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--bg3);
   border:1px solid var(--ac);border-radius:8px;padding:11px 18px;font-size:13px;z-index:200;display:none;
   box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw}
@@ -112,78 +99,46 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
 .row-act{display:flex;gap:5px;flex-wrap:wrap}
 .cand{background:var(--bg3);border:1px solid var(--bor);border-radius:7px;padding:8px 11px;margin-top:6px;
   display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
+.cadena{font-size:11.5px;color:var(--mut);margin-top:3px}
+.cadena i{font-style:normal;color:var(--ac2)}
+#arranque{min-height:70vh;display:grid;place-items:center;text-align:center;color:var(--mut)}
 </style>
 </head>
 <body>
 
-<!-- ══ PORTADA: elegir cliente ══ -->
-<div id="portada">
-  <div class="portada-box">
-    <div class="logo">
-      <div class="logo-mark">EE</div>
-      <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Contable</span></div>
-    </div>
-    <h1>¿Con qué cliente trabajamos?</h1>
-    <p>Elegí uno para entrar. Todos los módulos van a mostrar solo sus datos.</p>
-    <div class="aviso">
-      Los clientes están aislados: no hay vistas que mezclen dos. Para cambiar
-      de cliente se vuelve a esta pantalla.
-    </div>
-    <div id="lista-clientes"></div>
-    <div class="panel" style="margin-top:20px">
-      <div class="panel-h"><b>Alta de cliente</b>
-        <button class="g xs" onclick="toggle('#alta-cli')">Mostrar</button></div>
-      <div class="panel-b hide" id="alta-cli">
-        <div class="f">
-          <div><label>CUIT</label><input id="nc-cuit" placeholder="20216598998"></div>
-          <div><label>Alias</label><input id="nc-alias" placeholder="RODRIGUEZ"></div>
-          <div class="full"><label>Razón social</label><input id="nc-rs"></div>
-          <div><label>Condición IVA</label>
-            <select id="nc-iva"><option value="RI">Resp. Inscripto</option>
-              <option value="monotributo">Monotributo</option><option value="exento">Exento</option></select></div>
-          <div style="display:flex;align-items:flex-end"><button onclick="altaCliente()">Crear cliente</button></div>
-        </div>
-      </div>
-    </div>
+<header><div class="hd">
+  <div class="logo">
+    <div class="logo-mark">EE</div>
+    <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Contable</span></div>
   </div>
-</div>
+  <!-- EL FILTRO: se elige una empresa y TODOS los módulos filtran por ella.
+       No hay ALL: el sistema trabaja con una sola empresa por vez. -->
+  <div class="filtro-empresa">
+    <span class="et">Empresa</span>
+    <select id="sel-empresa" onchange="cambiarEmpresa(this.value)"></select>
+    <span class="cuit-chip" id="cuit-chip"></span>
+  </div>
+  <button class="g xs" onclick="tema()">◐ Tema</button>
+</div></header>
 
-<!-- ══ APP ══ -->
-<div id="app" class="hide">
-  <header><div class="hd">
-    <div class="logo">
-      <div class="logo-mark">EE</div>
-      <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Contable</span></div>
-    </div>
-    <div style="display:flex;align-items:center;gap:10px">
-      <button class="g xs" onclick="tema()">Tema</button>
-      <div class="cli-activo" onclick="salirCliente()" title="Cambiar de cliente">
-        <span class="dot"></span>
-        <div><b id="hd-cli"></b><small id="hd-cuit"></small></div>
-        <span style="color:var(--mut);font-size:11px">cambiar</span>
-      </div>
-    </div>
-  </div></header>
-  <nav><div class="nav" id="nav"></div></nav>
-  <main id="vista"></main>
-</div>
-
+<nav><div class="nav" id="nav"></div></nav>
+<main id="vista"><div id="arranque">Cargando…</div></main>
 <div id="toast"></div>
 
 <script>
-const API = '';
-let CLI = null, ACT = [], ENT = [], CTAS = [];
+let CLI = null, CLIENTES = [], ACT = [], ENT = [], CTAS = [];
 
 const MODULOS = [
-  ['tablero',      'Tablero'],
+  ['tesoreria',    'Tesorería'],
   ['facturas',     'Facturas'],
-  ['impuestos',    'Impuestos'],
-  ['iibb',         'DJ IIBB'],
   ['bancos',       'Bancos'],
   ['cheques',      'Cheques'],
   ['pagos',        'Pagos'],
   ['conciliacion', 'Conciliación'],
+  ['impuestos',    'Impuestos'],
+  ['iibb',         'DJ IIBB'],
   ['entidades',    'Entidades'],
+  ['clientes',     'Clientes del estudio'],
 ];
 
 /* ── utilidades ── */
@@ -202,11 +157,20 @@ function toast(msg, malo){
   t.style.borderColor = malo ? 'var(--bad)' : 'var(--ac)';
   t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display='none', 3800);
 }
+// Toda respuesta que llega TARDE se abandona. Sin esto, cambiar de empresa (o
+// de módulo) mientras algo está cargando deja que la respuesta vieja pinte
+// encima de la nueva: se vio la pantalla de Impuestos con el módulo en Cheques
+// (2026-08-18). En un sistema donde cada empresa es un compartimiento estanco,
+// una pintada tardía es lo más parecido a un dato filtrado — así que la
+// promesa se abandona en silencio y ese render nunca termina.
+const marca = () => (location.hash || '') + '|' + (CLI ? CLI.alias : '');
 async function api(ruta, opts){
   const sep = ruta.includes('?') ? '&' : '?';
-  const url = API + ruta + (CLI && ruta.startsWith('/api/c/') ? sep + 'cliente=' + encodeURIComponent(CLI.alias) : '');
+  const url = ruta + (CLI && ruta.startsWith('/api/c/') ? sep + 'cliente=' + encodeURIComponent(CLI.alias) : '');
+  const antes = marca();
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({error:'respuesta ilegible del servidor'}));
+  if (marca() !== antes && !(opts && opts.method === 'POST')) return new Promise(() => {});
   if (!r.ok) throw new Error(j.error || ('error ' + r.status));
   return j;
 }
@@ -214,39 +178,57 @@ const post = (ruta, cuerpo) => api(ruta, {method:'POST', headers:{'Content-Type'
   body: JSON.stringify(cuerpo)});
 const val = id => ($('#'+id)?.value ?? '').trim();
 const num = id => { const v = val(id); return v === '' ? null : parseFloat(v.replace(',','.')); };
+function tabla(cols, filas, opts){
+  return `<div class="tabla-wrap"><table><thead><tr>${
+    cols.map(c => `<th${/importe|monto|total|base|saldo|debo|debe|aplicado/i.test(c) ? ' class="num"' : ''}>${c}</th>`).join('')
+  }</tr></thead><tbody>${filas.map((f,i) => `<tr${opts?.onclick ? ` class="click" onclick="${opts.onclick(i)}"` : ''}>${
+    f.map(c => typeof c === 'object' && c?.n !== undefined ? `<td class="num">${c.n}</td>` : `<td>${c}</td>`).join('')
+  }</tr>`).join('')}</tbody></table></div>`;
+}
+function badgeEstado(e){
+  const cls = {pendiente:'b-warn', presentado:'b-ok', pagado:'b-ok', en_cartera:'b-ok', emitido:'b-warn',
+    depositado:'b-mut', endosado:'b-mut', debitado:'b-mut', cobrado:'b-mut', rechazado:'b-bad',
+    anulado:'b-bad', borrador:'b-warn', presentada:'b-ok', saldada:'b-ok', saldado:'b-ok',
+    impaga:'b-warn', conciliado:'b-ok', 'sin registrar':'b-warn', 'sin aplicar':'b-warn',
+    parcial:'b-warn', imputado:'b-ok', 'a cuenta':'b-warn', 'le debés':'b-bad', 'te debe':'b-warn',
+    cruzado:'b-warn'}[e] || 'b-mut';
+  return `<span class="badge ${cls}">${esc((e||'').replace(/_/g,' '))}</span>`;
+}
+function colorFecha(f){
+  if (!f) return '';
+  const h = hoy(), m = new Date(Date.now()+86400000).toISOString().slice(0,10);
+  return f < h ? 'neg' : (f <= m ? 'amb' : '');
+}
 
-/* ── portada ── */
-async function cargarClientes(){
-  try{
-    const cs = await api('/api/clientes');
-    $('#lista-clientes').innerHTML = cs.length ? cs.map(c => `
-      <div class="cli-card" onclick='entrar(${JSON.stringify(c)})'>
-        <div><b>${esc(c.razon_social)}</b>
-          <small>${esc(c.alias)} · CUIT ${esc(c.cuit)}</small></div>
-        <span class="chip">${esc(c.jurisdicciones || 'sin jurisdicción')}</span>
-      </div>`).join('')
-      : '<div class="vacio">Todavía no hay clientes. Cargá el primero abajo.</div>';
-  }catch(e){ $('#lista-clientes').innerHTML =
-    `<div class="vacio">No pude hablar con el servidor.<br><span class="mini">${esc(e.message)}</span></div>`; }
-}
-async function altaCliente(){
-  try{
-    await post('/api/clientes', {cuit: val('nc-cuit'), alias: val('nc-alias'),
-      razon_social: val('nc-rs'), condicion_iva: val('nc-iva')});
-    toast('Cliente creado'); ['nc-cuit','nc-alias','nc-rs'].forEach(i => $('#'+i).value='');
-    cargarClientes();
-  }catch(e){ toast(e.message, true); }
-}
-function entrar(c){
-  CLI = c; sessionStorage.setItem('ee-cli', JSON.stringify(c));
-  $('#portada').classList.add('hide'); $('#app').classList.remove('hide');
-  $('#hd-cli').textContent = c.razon_social; $('#hd-cuit').textContent = c.alias + ' · ' + c.cuit;
+/* ── el filtro de empresa: manda sobre todos los módulos ── */
+async function arrancar(){
+  try{ CLIENTES = await api('/api/clientes'); }
+  catch(e){ $('#vista').innerHTML = `<div class="vacio">No pude hablar con el servidor.<br>
+    <span class="mini">${esc(e.message)}</span></div>`; return; }
+  if (!CLIENTES.length){
+    $('#sel-empresa').innerHTML = '<option>— sin clientes —</option>';
+    $('#nav').innerHTML = MODULOS.filter(m => m[0]==='clientes')
+      .map(([k,t]) => `<a href="#${k}" id="nav-${k}" class="on">${t}</a>`).join('');
+    return vClientes();
+  }
+  $('#sel-empresa').innerHTML = CLIENTES.map(c =>
+    `<option value="${esc(c.alias)}">${esc(c.razon_social)}</option>`).join('');
   $('#nav').innerHTML = MODULOS.map(([k,t]) => `<a href="#${k}" id="nav-${k}">${t}</a>`).join('');
-  precargar().then(() => { if (!location.hash) location.hash = '#tablero'; else router(); });
+  const guardado = localStorage.getItem('ee-empresa');
+  const inicial = CLIENTES.find(c => c.alias === guardado) || CLIENTES[0];
+  await cambiarEmpresa(inicial.alias, true);
 }
-function salirCliente(){
-  CLI = null; sessionStorage.removeItem('ee-cli'); location.hash = '';
-  $('#app').classList.add('hide'); $('#portada').classList.remove('hide'); cargarClientes();
+async function cambiarEmpresa(alias, primera){
+  CLI = CLIENTES.find(c => c.alias === alias);
+  if (!CLI) return;
+  localStorage.setItem('ee-empresa', alias);
+  $('#sel-empresa').value = alias;
+  $('#cuit-chip').textContent = CLI.cuit + (CLI.jurisdicciones ? ' · ' + CLI.jurisdicciones : '');
+  await precargar();
+  // Cambiar la empresa REFILTRA el módulo en el que estás — no te saca de él.
+  if (primera && !location.hash) location.hash = '#tesoreria';
+  else router();
+  if (!primera) toast('Filtrando por ' + CLI.razon_social);
 }
 async function precargar(){
   [ACT, ENT, CTAS] = await Promise.all([
@@ -263,72 +245,178 @@ const optCta = () => CTAS.map(c =>
 /* ── router ── */
 window.addEventListener('hashchange', router);
 function router(){
-  if (!CLI) return;
-  const v = (location.hash || '#tablero').slice(1);
+  const v = (location.hash || '#tesoreria').slice(1);
   MODULOS.forEach(([k]) => $('#nav-'+k)?.classList.toggle('on', k === v));
-  ({tablero:vTablero, facturas:vFacturas, impuestos:vImpuestos, iibb:vIIBB, bancos:vBancos,
-    cheques:vCheques, pagos:vPagos, conciliacion:vConciliacion, entidades:vEntidades}[v] || vTablero)();
+  const f = {tesoreria:vTesoreria, facturas:vFacturas, bancos:vBancos, cheques:vCheques, pagos:vPagos,
+    conciliacion:vConciliacion, impuestos:vImpuestos, iibb:vIIBB, entidades:vEntidades,
+    clientes:vClientes}[v] || vTesoreria;
+  if (!CLI && v !== 'clientes') return vClientes();
+  f();
 }
 const pintar = h => { $('#vista').innerHTML = h; };
 const cargando = t => pintar(`<h2>${t}</h2><div class="vacio">Cargando…</div>`);
 
-/* ══ TABLERO ══ */
-async function vTablero(){
-  cargando('Tablero');
-  const r = await api('/api/c/resumen');
-  const p = r.impuestos_portal;
-  pintar(`
-    <h2>${esc(r.cliente.razon_social)}</h2>
-    <div class="sub">CUIT ${esc(r.cliente.cuit)} ·
-      ${r.jurisdicciones.map(j => esc(j.jurisdiccion) + (j.nro_inscripcion ? ' Nº'+esc(j.nro_inscripcion) : '')).join(' · ') || 'sin jurisdicciones cargadas'}</div>
-    <div class="grid">
-      <div class="card"><div class="k">Ventas del mes</div><div class="v">${plata(r.ventas_mes)}</div></div>
-      <div class="card"><div class="k">Compras del mes</div><div class="v">${plata(r.compras_mes)}</div></div>
-      <div class="card"><div class="k">Cheques en cartera</div><div class="v">${r.cheques_cartera}</div>
-        <div class="mini">${plata(r.cheques_cartera_importe)}</div></div>
-      <div class="card"><div class="k">Banco sin conciliar</div>
-        <div class="v ${r.banco_sin_conciliar ? 'neg' : ''}">${r.banco_sin_conciliar}</div>
-        <div class="mini">movimientos</div></div>
-      ${p ? `<div class="card"><div class="k">Situación en el portal</div>
-        <div class="v sm ${p.situacion_fiscal === 'REGULAR' ? 'pos' : 'neg'}">${esc(p.situacion_fiscal || '—')}</div>
-        <div class="mini">al ${fecha(p.fecha_consulta)}</div></div>
-        <div class="card"><div class="k">Saldo a favor</div><div class="v sm">${plata(p.saldo_a_favor)}</div>
-        <div class="mini">última DJ ${esc(p.ultima_dj?.periodo || '—')}</div></div>` : ''}
+/* ══════════ TESORERÍA ══════════
+   La casa nueva, misma forma que la del ERP (TESORERIA__DEFINICION.md):
+   Cuenta Corriente · Posición hoy · Vencimientos · Documentos.          */
+let tTab = 'cc', tEnt = null;
+async function vTesoreria(){
+  cargando('Tesorería');
+  const tabs = [['cc','Cuenta corriente'],['pos','Posición hoy'],['ven','Vencimientos'],['doc','Documentos']];
+  pintar(`<h2>Tesorería</h2>
+    <div class="sub">Todo lo de ${esc(CLI.razon_social)} — la empresa se cambia arriba.</div>
+    <div class="tabs">${tabs.map(([k,t]) =>
+      `<button class="${tTab===k?'on':''}" onclick="tTab='${k}';tEnt=null;vTesoreria()">${t}</button>`).join('')}</div>
+    <div id="t-panel"><div class="vacio">Cargando…</div></div>`);
+  ({cc:tCC, pos:tPos, ven:tVen, doc:tDoc}[tTab])();
+}
+const panelT = h => { $('#t-panel').innerHTML = h; };
+
+async function tCC(){
+  if (tEnt) return tCCDetalle(tEnt);
+  const cs = await api('/api/c/tesoreria/cuentacorriente');
+  const conSaldo = cs.filter(c => c.estado !== 'saldado');
+  panelT(`
+    <div class="grid" style="margin-bottom:14px">
+      <div class="card"><div class="k">Le debo a proveedores</div>
+        <div class="v neg">${plata(cs.reduce((s,c) => s + Math.max(c.le_debo,0), 0))}</div></div>
+      <div class="card"><div class="k">Me deben los clientes</div>
+        <div class="v pos">${plata(cs.reduce((s,c) => s + Math.max(c.me_debe,0), 0))}</div></div>
     </div>
-    ${p?.proximo_periodo_sin_presentar ? `<div class="aviso" style="margin-top:16px">
-      <b>DJ pendiente:</b> el portal no tiene presentado el período
-      ${esc(p.proximo_periodo_sin_presentar)}.
-      ${p.notificaciones_sin_leer ? ` · ${p.notificaciones_sin_leer} notificación(es) sin leer en el buzón fiscal.` : ''}
-    </div>` : ''}
-    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Vencimientos próximos</b>
-      <a href="#impuestos"><button class="g xs">Ver impuestos</button></a></div>
-      ${r.vencimientos.length ? tabla(
-        ['Impuesto','Fuente','Período','Vence','Importe','Estado'],
-        r.vencimientos.map(v => [esc(v.impuesto), esc(v.fuente), esc(v.periodo), fecha(v.fecha),
-          {n:plata(v.importe)}, badgeEstado(v.estado)]))
-        : '<div class="vacio">Sin vencimientos cargados.</div>'}
-    </div>
-    <div class="panel"><div class="panel-h"><b>Cheques que vencen en 30 días</b>
-      <a href="#cheques"><button class="g xs">Ver cheques</button></a></div>
-      ${r.cheques_a_vencer.length ? tabla(
-        ['Origen','Número','Banco','Vence','Importe','Estado'],
-        r.cheques_a_vencer.map(c => [esc(c.origen), esc(c.numero), esc(c.banco), fecha(c.fecha_pago),
-          {n:plata(c.importe)}, badgeEstado(c.estado)]))
-        : '<div class="vacio">Ninguno en los próximos 30 días.</div>'}
+    <div class="panel"><div class="panel-h"><b>${conSaldo.length} entidad(es) con saldo</b>
+      <span class="mini">clic en una fila para ver el mayor y las sugerencias</span></div>
+      ${cs.length ? tabla(['Entidad','Facturado · pagado','Le debo','Me debe','Estado'],
+        cs.map(c => [`${esc(c.razon_social)}<div class="mini">${esc(c.cuit)}</div>`,
+          `<span class="mini">compras ${plata(c.comprado)} · pagó ${plata(c.pagado)}<br>
+            ventas ${plata(c.vendido)} · cobró ${plata(c.cobrado)}</span>`,
+          {n: c.le_debo > 0.01 ? `<span class="neg">${plata(c.le_debo)}</span>` : '—'},
+          {n: c.me_debe > 0.01 ? `<span class="pos">${plata(c.me_debe)}</span>` : '—'},
+          badgeEstado(c.estado)]),
+        {onclick: i => `tEnt=${cs[i].id};vTesoreria()`})
+        : '<div class="vacio">Sin entidades cargadas.</div>'}
     </div>`);
 }
-function tabla(cols, filas){
-  return `<div class="tabla-wrap"><table><thead><tr>${
-    cols.map(c => `<th${/importe|monto|total|base|saldo/i.test(c) ? ' class="num"' : ''}>${c}</th>`).join('')
-  }</tr></thead><tbody>${filas.map(f => `<tr>${f.map(c =>
-    typeof c === 'object' && c?.n !== undefined ? `<td class="num">${c.n}</td>` : `<td>${c}</td>`
-  ).join('')}</tr>`).join('')}</tbody></table></div>`;
+async function tCCDetalle(eid){
+  const d = await api('/api/c/tesoreria/entidad/' + eid);
+  const s = d.sugerencias;
+  const hay = s.notas_credito.length + s.cheques_cartera.length + s.movimientos_sin_aplicar.length;
+  const ent = ENT.find(e => e.id === eid) || {};
+  panelT(`
+    <div style="margin-bottom:12px"><button class="g xs" onclick="tEnt=null;vTesoreria()">← Volver</button></div>
+    <h3 style="font-size:17px;margin-bottom:2px">${esc(ent.razon_social || d.entidad.cuit)}</h3>
+    <div class="sub">CUIT ${esc(d.entidad.cuit)}</div>
+    ${hay ? `<div class="panel" style="border-left:3px solid var(--warn)">
+      <div class="panel-h"><b>Sugerencias — plata de esta entidad que todavía no entró al circuito</b></div>
+      <div class="panel-b">
+        <div class="mini" style="margin-bottom:9px">Antes de crear un pago nuevo, mirá si algo de esto lo cancela.</div>
+        ${s.notas_credito.map(n => `<div class="cand"><span>Nota de crédito
+          ${esc(n.punto_venta||'')}-${esc(n.numero||'')} · saldo ${plata(Math.abs(n.saldo))}</span>
+          <span class="badge b-ok">se imputa como pago</span></div>`).join('')}
+        ${s.cheques_cartera.map(c => `<div class="cand"><span>Cheque Nº${esc(c.numero)}
+          ${esc(c.banco||'')} · ${plata(c.importe)} · vence ${fecha(c.fecha_pago)}</span>
+          <span class="badge b-ok">en cartera</span></div>`).join('')}
+        ${s.movimientos_sin_aplicar.map(m => `<div class="cand"><span>${esc(m.banco)} ${fecha(m.fecha)} ·
+          ${plata(m.importe)} · ${esc((m.descripcion||'').slice(0,40))}</span>
+          <span class="badge b-warn">sin aplicar</span></div>`).join('')}
+      </div></div>` : `<div class="aviso">No hay NC, ni cheques en cartera, ni movimientos del banco
+        sin aplicar de esta entidad. Si hay que pagarle, se crea un medio nuevo en Pagos.</div>`}
+    <div class="panel"><div class="panel-h"><b>Mayor — comprobantes</b></div>
+      ${d.facturas.length ? tabla(['Fecha','Comprobante','Tipo','Total','Pagado','Saldo'],
+        d.facturas.map(f => [fecha(f.fecha),
+          `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+          f.mov, {n:plata(f.total)}, {n:plata(f.pagado)},
+          {n: Math.abs(f.saldo) > 0.01 ? `<b>${plata(f.saldo)}</b>` : '<span class="badge b-ok">saldada</span>'}]))
+        : '<div class="vacio">Sin comprobantes.</div>'}
+    </div>
+    <div class="panel"><div class="panel-h"><b>Recibos y órdenes de pago</b></div>
+      ${d.pagos.length ? tabla(['Fecha','Tipo','Número','Total'],
+        d.pagos.map(p => [fecha(p.fecha), p.direccion, esc(p.numero||'—'), {n:plata(p.total)}]))
+        : '<div class="vacio">Sin pagos ni cobranzas.</div>'}
+    </div>`);
 }
-function badgeEstado(e){
-  const cls = {pendiente:'b-warn', presentado:'b-ok', pagado:'b-ok', en_cartera:'b-ok', emitido:'b-warn',
-    depositado:'b-mut', endosado:'b-mut', debitado:'b-mut', cobrado:'b-mut', rechazado:'b-bad',
-    anulado:'b-bad', borrador:'b-warn', presentada:'b-ok'}[e] || 'b-mut';
-  return `<span class="badge ${cls}">${esc((e||'').replace('_',' '))}</span>`;
+
+async function tPos(){
+  const p = await api('/api/c/tesoreria/posicion');
+  const k = p.kpis;
+  panelT(`
+    <div class="grid">
+      <div class="card"><div class="k">Bancos</div><div class="v">${plata(k.bancos)}</div></div>
+      <div class="card"><div class="k">Cheques en cartera</div><div class="v sm pos">${plata(k.cheques_cartera)}</div>
+        <div class="mini">a cobrar</div></div>
+      <div class="card"><div class="k">Cheques a pagar</div><div class="v sm neg">${plata(k.cheques_a_pagar)}</div>
+        <div class="mini">emitidos sin debitar</div></div>
+      <div class="card"><div class="k">Le debo</div><div class="v sm neg">${plata(k.le_debo)}</div>
+        <div class="mini">a proveedores</div></div>
+      <div class="card"><div class="k">Me deben</div><div class="v sm pos">${plata(k.me_deben)}</div>
+        <div class="mini">clientes</div></div>
+      <div class="card"><div class="k">Impuestos liquidados</div><div class="v sm neg">${plata(k.impuestos_liquidados)}</div>
+        <div class="mini">con monto</div></div>
+    </div>
+    ${p.vencido.length ? `<div class="aviso" style="border-left-color:var(--bad);margin-top:16px">
+      <b>${p.vencido.length} línea(s) vencida(s)</b> por
+      ${plata(p.vencido.reduce((s,l) => s + Math.abs(l.importe), 0))}.</div>` : ''}
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Saldo por cuenta</b></div>
+      ${p.cuentas.length ? tabla(['Banco','Cuenta','Moneda','Saldo','Último movimiento'],
+        p.cuentas.map(c => [esc(c.banco), `${esc(c.tipo||'')} ${esc(c.numero||'')}`, esc(c.moneda),
+          {n: `<b class="${c.saldo<0?'neg':''}">${plata(c.saldo)}</b>`}, fecha(c.ultimo)]))
+        : '<div class="vacio">Sin cuentas bancarias.</div>'}
+    </div>
+    <div class="panel"><div class="panel-h"><b>Lo que viene — línea por línea</b>
+      <span class="mini">vencido en rojo · hoy y mañana en ámbar · a cobrar en verde</span></div>
+      ${p.lineas.length ? tabla(['Vence','Detalle','Fuente','Estado','Importe'],
+        p.lineas.map(l => [`<span class="${colorFecha(l.fecha)}">${fecha(l.fecha)}</span>`,
+          esc(l.detalle), esc(l.fuente), badgeEstado(l.estado),
+          {n:`<span class="${l.importe<0?'neg':'pos'}">${plata(l.importe)}</span>`}]))
+        : '<div class="vacio">Nada pendiente.</div>'}
+    </div>`);
+}
+
+async function tVen(){
+  const ls = await api('/api/c/tesoreria/vencimientos');
+  const porMes = {};
+  ls.forEach(l => { const m = (l.fecha||'').slice(0,7); (porMes[m] = porMes[m] || []).push(l); });
+  panelT(`
+    <div class="aviso">El calendario completo: cheques, facturas impagas e impuestos —
+      liquidados o no. La Posición muestra solo lo que tiene monto; acá está todo.</div>
+    ${Object.keys(porMes).sort().map(m => {
+      const filas = porMes[m], total = filas.reduce((s,l) => s + l.importe, 0);
+      return `<div class="panel"><div class="panel-h">
+        <b>${m ? m.split('-').reverse().join('/') : 'sin fecha'}</b>
+        <span class="num ${total<0?'neg':'pos'}"><b>${plata(total)}</b></span></div>
+        ${tabla(['Fecha','Fuente','Detalle','Estado','Importe'],
+          filas.map(l => [`<span class="${colorFecha(l.fecha)}">${fecha(l.fecha)}</span>`,
+            esc(l.fuente), esc(l.detalle), badgeEstado(l.estado),
+            {n:`<span class="${l.importe<0?'neg':'pos'}">${plata(l.importe)}</span>`}]))}
+      </div>`; }).join('') || '<div class="panel"><div class="vacio">Nada en el calendario.</div></div>'}`);
+}
+
+let docFlujo = '', docClase = '';
+async function tDoc(){
+  const ds = await api('/api/c/tesoreria/documentos');
+  const vis = ds.filter(d => (!docFlujo || d.flujo === docFlujo) && (!docClase || d.clase === docClase));
+  const clases = ['factura','pago','cheque','banco'];
+  panelT(`
+    <div class="aviso"><b>La escalera:</b> FACTURA se aplica con PAGO · PAGO con efectivo, banco o cheques ·
+      CHEQUE y BANCO con RECIBOS. Cada fila muestra su cadena: cuántos eslabones tiene armados.</div>
+    <div class="panel"><div class="panel-h">
+      <div class="row-act">
+        <button class="${!docClase?'':'g'} xs" onclick="docClase='';tDoc()">Todos</button>
+        ${clases.map(c => `<button class="${docClase===c?'':'g'} xs" onclick="docClase='${c}';tDoc()">${c}</button>`).join('')}
+      </div>
+      <div class="row-act">
+        <button class="${!docFlujo?'':'g'} xs" onclick="docFlujo='';tDoc()">Ingresos y egresos</button>
+        <button class="${docFlujo==='ingreso'?'':'g'} xs" onclick="docFlujo='ingreso';tDoc()">Ingresos</button>
+        <button class="${docFlujo==='egreso'?'':'g'} xs" onclick="docFlujo='egreso';tDoc()">Egresos</button>
+      </div></div>
+      ${vis.length ? tabla(['Fecha','Clase','Documento','Entidad','Estado','Total','Saldo'],
+        vis.map(d => [fecha(d.fecha), `<span class="badge b-mut">${esc(d.clase)}</span>`,
+          `${esc(d.detalle)}${d.cadena.length ? `<div class="cadena">↳ ${d.cadena.map(c => `<i>${esc(c)}</i>`).join(' · ')}</div>`
+            : `<div class="cadena">↳ se aplica con ${esc(d.se_aplica_con)}</div>`}`,
+          esc(d.entidad), badgeEstado(d.estado),
+          {n:`<span class="${d.flujo==='egreso'?'neg':'pos'}">${plata(d.total)}</span>`},
+          {n: d.saldo == null ? '—' : plata(d.saldo)}]))
+        : '<div class="vacio">Sin documentos con ese filtro.</div>'}
+    </div>`);
 }
 
 /* ══ FACTURAS ══ */
@@ -366,7 +454,7 @@ async function vFacturas(){
           <select id="nf-act">${ACT.map((a,i) =>
             `<option value="${i}"${a.principal?' selected':''}>${esc(a.codigo)} · ${esc(a.nombre)} — ${a.alicuota}%${a.principal?' (principal)':''}</option>`
           ).join('') || '<option value="">— sin padrón cargado —</option>'}</select></div>` : ''}
-        <div class="full" style="display:flex;gap:8px"><button onclick="altaFactura()">Guardar</button></div>
+        <div class="full"><button onclick="altaFactura()">Guardar</button></div>
       </div></div>
     </div>
     ${fs.length ? `<div class="panel"><div class="panel-h"><b>${fs.length} comprobante(s)</b>
@@ -508,8 +596,8 @@ async function vBancos(){
   const [cs, ms] = await Promise.all([api('/api/c/cuentas'), api('/api/c/movimientos')]);
   CTAS = cs;
   pintar(`
-    <h2>Bancos</h2><div class="sub">El extracto. Los movimientos se van completando con el CUIT y el
-      recibo cuando se usan para pagar o cuando concilian.</div>
+    <h2>Bancos</h2><div class="sub">El extracto anotado: cada movimiento se va completando con el CUIT,
+      el recibo y la factura cuando se usa para pagar o cuando concilia.</div>
     <div class="grid">${cs.map(c => `<div class="card"><div class="k">${esc(c.banco)}</div>
       <div class="v sm">${plata(c.saldo_calculado)}</div>
       <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.</div></div>`).join('')
@@ -539,7 +627,8 @@ async function vBancos(){
     <div class="panel"><div class="panel-h"><b>${ms.length} movimiento(s)</b>
       <a href="#conciliacion"><button class="g xs">Ir a conciliación</button></a></div>
       ${ms.length ? tabla(['Fecha','Banco','Descripción','CUIT','Importe','Estado'],
-        ms.map(m => [fecha(m.fecha), esc(m.banco), esc(m.descripcion||'—'),
+        ms.map(m => [fecha(m.fecha), esc(m.banco),
+          `${esc(m.descripcion||'—')}${m.pago_id ? `<div class="cadena">↳ <i>recibo #${m.pago_id}</i></div>` : ''}`,
           m.cuit_contraparte ? `<span class="mini">${esc(m.cuit_contraparte)}</span>` : '—',
           {n:`<span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span>`},
           m.conciliado ? `<span class="badge b-ok" title="${esc(m.conciliado_motivo||'')}">conciliado</span>`
@@ -567,18 +656,19 @@ async function vCheques(){
   const rec = chs.filter(c => c.origen === 'recibido'), emi = chs.filter(c => c.origen === 'emitido');
   pintar(`
     <h2>Cheques</h2>
-    <div class="sub">Los recibidos entran <b>solo por una cobranza</b> y se pueden depositar o endosar.
-      Los emitidos son propios del cliente.</div>
-    <div class="panel"><div class="panel-h"><b>Recibidos — ${rec.length}</b>
+    <div class="sub">Solo dos clases: los <b>cobrados</b> —que entran por una cobranza y se pueden depositar
+      o endosar— y los <b>emitidos</b> por la empresa. No hay "me dieron" ni "me prestaron".</div>
+    <div class="panel"><div class="panel-h"><b>Cobrados (recibidos) — ${rec.length}</b>
       <span class="mini">en cartera: ${plata(rec.filter(c=>c.estado==='en_cartera').reduce((s,c)=>s+c.importe,0))}</span></div>
-      ${rec.length ? tabla(['Número','Banco','Librador','Vence','Importe','Estado','Recibo','Acciones'],
+      ${rec.length ? tabla(['Número','Banco','De quién','Vence','Importe','Estado','Recibo','Acciones'],
         rec.map(c => [esc(c.numero), esc(c.banco||'—'), esc(c.librador||c.cuit_librador||'—'),
-          fecha(c.fecha_pago), {n:plata(c.importe)}, badgeEstado(c.estado),
+          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
+          {n:plata(c.importe)}, badgeEstado(c.estado),
           `<span class="mini">${esc(c.recibo_origen||'—')}</span>`,
           c.estado === 'en_cartera' ? `<div class="row-act">
             <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
             <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']))
-        : `<div class="vacio">Sin cheques recibidos.<br>
+        : `<div class="vacio">Sin cheques cobrados.<br>
            <span class="mini">Se cargan desde Pagos → cobranza con medio cheque.</span></div>`}
     </div>
     <div class="panel"><div class="panel-h"><b>Emitidos — ${emi.length}</b>
@@ -592,7 +682,8 @@ async function vCheques(){
         <div style="display:flex;align-items:flex-end"><button onclick="altaCheque()">Emitir</button></div>
       </div></div>
       ${emi.length ? tabla(['Número','Banco','Vence','Importe','Estado'],
-        emi.map(c => [esc(c.numero), esc(c.banco||'—'), fecha(c.fecha_pago),
+        emi.map(c => [esc(c.numero), esc(c.banco||'—'),
+          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
           {n:plata(c.importe)}, badgeEstado(c.estado)]))
         : '<div class="vacio">Sin cheques emitidos.</div>'}
     </div>`);
@@ -799,8 +890,9 @@ async function vEntidades(){
   ENT = await api('/api/c/entidades');
   pintar(`
     <h2>Entidades</h2>
-    <div class="sub">La ficha del CUIT es única para todo el estudio; esta relación
-      (proveedor/cliente, cuenta corriente) es solo de ${esc(CLI.alias)} y no la ve nadie más.</div>
+    <div class="sub">La ficha del CUIT es <b>única para todo el estudio</b> (no se repite 100 veces);
+      esta relación —quién es proveedor, quién cliente, la cuenta corriente— es solo de
+      ${esc(CLI.alias)} y ningún otro cliente la ve.</div>
     <div class="panel"><div class="panel-h"><b>Agregar</b>
       <button class="g xs" onclick="toggle('#e-alta')">Mostrar</button></div>
       <div class="panel-b hide" id="e-alta"><div class="f">
@@ -829,10 +921,50 @@ async function altaEntidad(){
   }catch(e){ toast(e.message, true); }
 }
 
+/* ══ CLIENTES DEL ESTUDIO ══ */
+async function vClientes(){
+  const cs = await api('/api/clientes');
+  CLIENTES = cs;
+  pintar(`
+    <h2>Clientes del estudio</h2>
+    <div class="sub">Cada CUIT es un cliente y está aislado del resto. El de arriba es el que se está
+      viendo ahora en todos los módulos.</div>
+    <div class="panel"><div class="panel-h"><b>Alta de cliente</b>
+      <button class="g xs" onclick="toggle('#c-alta')">Mostrar</button></div>
+      <div class="panel-b hide" id="c-alta"><div class="f">
+        <div><label>CUIT</label><input id="nc-cuit" placeholder="20216598998"></div>
+        <div><label>Alias</label><input id="nc-alias" placeholder="RODRIGUEZ"></div>
+        <div class="full"><label>Razón social</label><input id="nc-rs"></div>
+        <div><label>Condición IVA</label>
+          <select id="nc-iva"><option value="RI">Resp. Inscripto</option>
+            <option value="monotributo">Monotributo</option><option value="exento">Exento</option></select></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaCliente()">Crear cliente</button></div>
+      </div></div>
+      ${cs.length ? tabla(['Alias','Razón social','CUIT','Jurisdicciones','Alta',''],
+        cs.map(c => [`<b>${esc(c.alias)}</b>`, esc(c.razon_social), esc(c.cuit),
+          esc(c.jurisdicciones||'—'), fecha(c.alta),
+          CLI && c.alias === CLI.alias ? '<span class="badge b-ok">viendo ahora</span>'
+            : `<button class="g xs" onclick="cambiarEmpresa('${esc(c.alias)}')">Ver esta</button>`]))
+        : '<div class="vacio">Sin clientes. Cargá el primero.</div>'}
+    </div>`);
+}
+async function altaCliente(){
+  try{
+    await post('/api/clientes', {cuit: val('nc-cuit'), alias: val('nc-alias'),
+      razon_social: val('nc-rs'), condicion_iva: val('nc-iva')});
+    toast('Cliente creado');
+    CLIENTES = await api('/api/clientes');
+    $('#sel-empresa').innerHTML = CLIENTES.map(c =>
+      `<option value="${esc(c.alias)}">${esc(c.razon_social)}</option>`).join('');
+    if (!CLI) return arrancar();
+    $('#sel-empresa').value = CLI.alias;
+    vClientes();
+  }catch(e){ toast(e.message, true); }
+}
+
 /* ── arranque ── */
 document.documentElement.className = localStorage.getItem('ee-tema') || '';
-const guardado = sessionStorage.getItem('ee-cli');
-if (guardado) entrar(JSON.parse(guardado)); else cargarClientes();
+arrancar();
 </script>
 </body>
 </html>
