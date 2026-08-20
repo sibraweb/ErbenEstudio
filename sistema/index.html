@@ -259,16 +259,125 @@ const cargando = t => pintar(`<h2>${t}</h2><div class="vacio">Cargando…</div>`
 /* ══════════ TESORERÍA ══════════
    La casa nueva, misma forma que la del ERP (TESORERIA__DEFINICION.md):
    Cuenta Corriente · Posición hoy · Vencimientos · Documentos.          */
-let tTab = 'cc', tEnt = null;
+let tTab = 'tab', tEnt = null, tabEnt = '';
 async function vTesoreria(){
   cargando('Tesorería');
-  const tabs = [['cc','Cuenta corriente'],['pos','Posición hoy'],['ven','Vencimientos'],['doc','Documentos']];
+  const tabs = [['tab','Tablero'],['cc','Cuenta corriente'],['pos','Posición hoy'],
+                ['ven','Vencimientos'],['doc','Documentos']];
   pintar(`<h2>Tesorería</h2>
     <div class="sub">Todo lo de ${esc(CLI.razon_social)} — la empresa se cambia arriba.</div>
     <div class="tabs">${tabs.map(([k,t]) =>
       `<button class="${tTab===k?'on':''}" onclick="tTab='${k}';tEnt=null;vTesoreria()">${t}</button>`).join('')}</div>
     <div id="t-panel"><div class="vacio">Cargando…</div></div>`);
-  ({cc:tCC, pos:tPos, ven:tVen, doc:tDoc}[tTab])();
+  ({tab:tTablero, cc:tCC, pos:tPos, ven:tVen, doc:tDoc}[tTab])();
+}
+
+/* ── EL TABLERO: los huecos, todos accionables desde acá ──
+   Sin documentación de obra: un estudio contable no certifica obras (Juan,
+   18/08). El hueco que ocupa ese lugar es el de las ventas sin actividad,
+   que son las que rompen el control de la DJ. */
+async function tTablero(){
+  const t = await api('/api/c/tesoreria/tablero' + (tabEnt ? '?entidad_id=' + tabEnt : ''));
+  const r = t.resumen;
+  const nada = !r.banco && !r.pagos && !r.impagas && !r.cheques && !r.sin_actividad;
+  panelT(`
+    <div class="panel"><div class="panel-h"><b>Filtrar por entidad</b>
+      <select style="max-width:320px" onchange="tabEnt=this.value;vTesoreria()">
+        <option value="">Todas las entidades de ${esc(CLI.alias)}</option>
+        ${ENT.map(e => `<option value="${e.id}"${tabEnt==String(e.id)?' selected':''}>${esc(e.razon_social)}</option>`).join('')}
+      </select></div></div>
+    <div class="grid">
+      <div class="card"><div class="k">Banco sin registrar</div>
+        <div class="v ${r.banco?'neg':''}">${r.banco}</div>
+        <div class="mini">${r.banco_resolubles} se pueden solas</div></div>
+      <div class="card"><div class="k">Pagos a cuenta</div>
+        <div class="v ${r.pagos?'amb':''}">${r.pagos}</div>
+        <div class="mini">${plata(r.pagos_importe)} sin imputar</div></div>
+      <div class="card"><div class="k">Facturas impagas</div>
+        <div class="v">${r.impagas}</div><div class="mini">${plata(r.impagas_importe)}</div></div>
+      <div class="card"><div class="k">Cheques en cartera</div>
+        <div class="v ${r.cheques?'amb':''}">${r.cheques}</div>
+        <div class="mini">${plata(r.cheques_importe)} parados</div></div>
+    </div>
+    ${nada ? '<div class="panel" style="margin-top:16px"><div class="vacio">No queda nada pendiente. Todo aplicado.</div></div>' : ''}
+
+    ${t.banco_sin_registrar.length ? `<div class="panel" style="margin-top:16px">
+      <div class="panel-h"><b>Banco sin registrar — ${t.banco_sin_registrar.length}</b>
+        <a href="#conciliacion"><button class="g xs">Ir a conciliación</button></a></div>
+      <div class="panel-b">${t.banco_sin_registrar.map(m => `
+        <div class="cand" style="display:block">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+            <span><b>${fecha(m.fecha)} · ${esc(m.banco)} ·
+              <span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span></b>
+              <div class="mini">${esc(m.descripcion||'sin descripción')}</div></span>
+            ${m.unico ? `<button class="xs" onclick="conciliarDesdeTablero(${m.id},'${m.candidatos[0].tipo}',${m.candidatos[0].id})">Conciliar</button>`
+              : m.candidatos.length ? `<span class="badge b-warn">${m.candidatos.length} candidatos</span>`
+              : '<span class="badge b-mut">sin candidato</span>'}
+          </div>
+          ${m.candidatos.length ? `<div class="cadena">↳ ${m.candidatos.map(c => `<i>${esc(c.motivo)}</i>`).join(' · ')}</div>` : ''}
+        </div>`).join('')}</div>
+    </div>` : ''}
+
+    ${t.pagos_a_cuenta.length ? `<div class="panel">
+      <div class="panel-h"><b>Pagos a cuenta — plata que no se imputó a ninguna factura</b></div>
+      ${tabla(['Fecha','Tipo','Entidad','Nº','Total','A cuenta',''],
+        t.pagos_a_cuenta.map(p => [fecha(p.fecha),
+          p.direccion === 'cobro' ? '<span class="badge b-ok">cobranza</span>' : '<span class="badge b-warn">pago</span>',
+          esc(p.entidad), esc(p.numero||'—'), {n:plata(p.total)},
+          {n:`<b class="amb">${plata(p.a_cuenta)}</b>`},
+          `<button class="xs" onclick="imputar(${p.id})">Imputar (FIFO)</button>`]))}
+    </div>` : ''}
+
+    ${t.cheques_en_cartera.length ? `<div class="panel">
+      <div class="panel-h"><b>Cheques en cartera — plata parada</b></div>
+      ${tabla(['Número','Banco','De quién','Vence','Importe','Acciones'],
+        t.cheques_en_cartera.map(c => [esc(c.numero), esc(c.banco||'—'),
+          esc(c.librador||c.cuit_librador||'—'),
+          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
+          {n:plata(c.importe)},
+          `<div class="row-act"><button class="g xs" onclick="depositar(${c.id})">Depositar</button>
+            <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>`]))}
+    </div>` : ''}
+
+    ${t.facturas_impagas.length ? `<div class="panel">
+      <div class="panel-h"><b>Facturas impagas — ${t.facturas_impagas.length}</b>
+        <span class="mini">de la más vieja a la más nueva</span></div>
+      ${tabla(['Fecha','Antigüedad','Comprobante','Entidad','Total','Saldo',''],
+        t.facturas_impagas.map(f => [fecha(f.fecha),
+          f.dias == null ? '—' : `<span class="${f.dias>60?'neg':(f.dias>30?'amb':'')}">${f.dias} días</span>`,
+          `${esc(f.mov)} ${esc(f.tipo)} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+          esc(f.entidad), {n:plata(f.total)}, {n:`<b>${plata(f.saldo)}</b>`},
+          `<button class="g xs" onclick="pagarDesdeTablero(${f.entidad_id},'${f.mov}')">
+            ${f.mov === 'compra' ? 'Pagar' : 'Cobrar'}</button>`]))}
+    </div>` : ''}`);
+}
+async function conciliarDesdeTablero(mid, tipo, id){
+  try{ await post('/api/c/conciliacion/manual', {movimiento_id:mid, tipo, id});
+    toast('Conciliado — y quedó el recibo'); vTesoreria(); }catch(e){ toast(e.message, true); }
+}
+async function imputar(pid){
+  try{ const r = await post(`/api/c/pagos/${pid}/imputar`, {});
+    toast(r.imputado.length ? `Imputado a ${r.imputado.length} factura(s)`
+      : 'No hay facturas impagas de esa entidad', !r.imputado.length);
+    vTesoreria();
+  }catch(e){ toast(e.message, true); }
+}
+/* La actividad de IIBB se asigna en el módulo FACTURAS, que es donde vive el
+   dato (Juan, 18/08). Tesorería solo cruza plata. */
+async function asignarActividad(fid, idx){
+  if (idx === '') return;
+  const a = ACT[+idx];
+  try{ await post(`/api/c/facturas/${fid}/actividad`, {codigo:a.codigo, alicuota:a.alicuota});
+    toast('Actividad asignada'); vFacturas(); }catch(e){ toast(e.message, true); }
+}
+function pagarDesdeTablero(entidadId, mov){
+  pDir = mov === 'compra' ? 'pago' : 'cobro';
+  location.hash = '#pagos';
+  setTimeout(() => {
+    const p = $('#p-alta'); if (p) p.classList.remove('hide');
+    prepararPago();
+    const s = $('#np-ent'); if (s){ s.value = entidadId; cargarImpagas(); }
+  }, 600);
 }
 const panelT = h => { $('#t-panel').innerHTML = h; };
 
@@ -457,13 +566,23 @@ async function vFacturas(){
         <div class="full"><button onclick="altaFactura()">Guardar</button></div>
       </div></div>
     </div>
+    ${esVenta && fs.some(f => !f.iibb_codigo) ? `<div class="aviso" style="border-left-color:var(--bad)">
+      <b>${fs.filter(f => !f.iibb_codigo).length} venta(s) sin actividad.</b>
+      Mientras estén así la DJ de IIBB no cierra: asignáselas en la columna Actividad.</div>` : ''}
     ${fs.length ? `<div class="panel"><div class="panel-h"><b>${fs.length} comprobante(s)</b>
       <span class="mini">Total ${plata(fs.reduce((s,f) => s+f.total, 0))}</span></div>
-      ${tabla(['Fecha', esVenta?'Cliente':'Proveedor','Comprobante', esVenta?'Actividad':'', 'Neto','IVA','Total','Saldo'],
+      ${tabla(['Fecha', esVenta?'Cliente':'Proveedor','Comprobante', esVenta?'Actividad IIBB':'', 'Neto','IVA','Total','Saldo'],
         fs.map(f => [fecha(f.fecha), esc(f.entidad),
           `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
-          esVenta ? (f.iibb_codigo ? `<span class="mini">${esc(f.iibb_codigo)} · ${f.iibb_alicuota}%</span>`
-            : '<span class="badge b-bad">sin actividad</span>') : '',
+          // El par actividad+alícuota se elige y se CORRIGE acá, que es donde
+          // vive el dato de la factura (Juan, 18/08).
+          esVenta ? `<select onchange="asignarActividad(${f.id}, this.value)"
+              style="min-width:180px;${f.iibb_codigo ? '' : 'border-color:var(--bad)'}">
+            ${f.iibb_codigo ? '' : '<option value="">— sin actividad —</option>'}
+            ${ACT.map((a,i) => `<option value="${i}"${
+              f.iibb_codigo === a.codigo && f.iibb_alicuota === a.alicuota ? ' selected' : ''
+            }>${esc(a.codigo)} · ${a.alicuota}%</option>`).join('')}
+          </select>` : '',
           {n:plata(f.neto)}, {n:plata(f.iva)}, {n:plata(f.total)},
           {n: f.saldo > 0.01 ? `<span class="neg">${plata(f.saldo)}</span>`
             : '<span class="badge b-ok">saldada</span>'}]))}

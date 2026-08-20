@@ -28,8 +28,8 @@ También está en `.claude/launch.json` como `erben-estudio`.
 
 | Módulo | Qué hace |
 |---|---|
-| **Tesorería** | la casa nueva, igual que la del ERP: **Cuenta corriente** (le debo / me debe, con el bloque SUGERENCIAS), **Posición hoy**, **Vencimientos** y **Documentos** (la vista única con la escalera) |
-| **Facturas** | compras y ventas con IVA discriminado; las ventas llevan el **par actividad+alícuota** de IIBB (default: la actividad principal) |
+| **Tesorería** | la casa nueva, igual que la del ERP: **Tablero** (los huecos accionables), **Cuenta corriente** (le debo / me debe, con el bloque SUGERENCIAS), **Posición hoy**, **Vencimientos** y **Documentos** (la vista única con la escalera). Sin documentación de obra: un estudio no certifica obras |
+| **Facturas** | compras y ventas con IVA discriminado; las ventas llevan el **par actividad+alícuota** de IIBB (default: la actividad principal) y se puede corregir en la grilla — la clasificación fiscal vive acá, no en Tesorería |
 | **Impuestos** | vencimientos (ARCA y provincias) + **liquidación de IVA** del período: débito − crédito − percepciones |
 | **DJ IIBB** | base por actividad del período, con el **control Σ bases == Σ ventas**: si no cierra, no se presenta |
 | **Bancos** | cuentas y extracto; los movimientos se van completando con CUIT y recibo |
@@ -63,8 +63,8 @@ adivinar rompe la cuenta corriente en silencio.
 - [x] Repo, arquitectura y decisión de entidades (maestro único + relaciones)
 - [x] Esquema completo (`servidor/esquema.sql`) y API (`servidor/server.py`)
 - [x] App con selector de cliente y los 9 módulos (`sistema/index.html`)
-- [x] Módulo Tesorería (4 pestañas) y filtro de empresa en la fila de arriba
-- [x] Probado de punta a punta: 43/43 checks desde base limpia
+- [x] Módulo Tesorería (5 pestañas, con Tablero) y filtro de empresa arriba
+- [x] Probado de punta a punta: 53/53 checks desde base limpia
 - [ ] Migrar los jobs ATP acá (`parsers/clientes.py` + namespace `EST/` de credenciales)
 - [ ] Cargar los vencimientos de ARCA desde los jobs de la suite
 - [ ] Importar extractos bancarios desde los parsers (hoy el alta es manual o por lote vía API)

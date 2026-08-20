@@ -1545,6 +1545,187 @@ def plata_txt(n):
     return "$" + f"{n:,.2f}".replace(",", "@").replace(".", ",").replace("@", ".")
 
 
+# ── EL TABLERO — "la cuenta corriente potenciada" ───────────────────────────
+# §B5 de la definición: los HUECOS visibles y accionables en un solo lugar.
+#
+# En el ERP los huecos son "docs de obra sin factura, pagos sin imputar, banco
+# sin registrar". Acá NO hay documentación de obra (Juan, 2026-08-18) — un
+# estudio contable no certifica obras — así que ese hueco simplemente no
+# existe y el tablero queda con los tres de plata.
+#
+# ⚠ Las ventas sin actividad de IIBB NO son un hueco de Tesorería aunque
+# rompan la DJ (Juan, 2026-08-18: «eso es en el módulo de factura»). Tesorería
+# cruza plata; la clasificación fiscal del comprobante vive donde vive el
+# comprobante. El aviso y el selector están en Facturas, y la DJ avisa aparte.
+
+@app.get("/api/c/tesoreria/tablero")
+def api_tablero():
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    eid = request.args.get("entidad_id")
+    filtro_ent = " AND e.id=?" if eid else ""
+    arg_ent = [eid] if eid else []
+
+    # 1) Banco sin registrar: movimientos que nadie explicó.
+    banco = []
+    for mov in con.execute(
+            "SELECT m.*, c.banco FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+            "WHERE m.cliente_id=? AND m.conciliado=0 ORDER BY m.fecha DESC", (cid,)):
+        if eid:
+            ent = con.execute("SELECT cuit FROM entidades_cliente WHERE id=? AND cliente_id=?",
+                              (eid, cid)).fetchone()
+            if not ent or mov["cuit_contraparte"] != ent["cuit"]:
+                continue
+        cands = _candidatos(con, cid, mov)
+        banco.append({**dict(mov),
+                      "candidatos": [{"tipo": t, "id": i, "motivo": mo} for t, i, mo in cands],
+                      "unico": len(cands) == 1})
+
+    # 2) Pagos a cuenta: cobraron o pagaron, pero no se imputaron a factura.
+    pagos = filas(con.execute(
+        "SELECT p.id, p.fecha, p.numero, p.direccion, p.total, p.entidad_id, m.razon_social AS entidad, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.pago_id=p.id),0) AS aplicado "
+        "FROM pagos p JOIN entidades_cliente e ON e.id=p.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit "
+        "WHERE p.cliente_id=?" + filtro_ent + " ORDER BY p.fecha", [cid] + arg_ent))
+    pagos = [p for p in pagos if p["total"] - p["aplicado"] > 0.01]
+    for p in pagos:
+        p["a_cuenta"] = round(p["total"] - p["aplicado"], 2)
+
+    # 3) Facturas impagas, con su antigüedad.
+    hoy_d = date.today()
+    facturas = filas(con.execute(
+        "SELECT f.id, f.mov, f.fecha, f.tipo, f.letra, f.punto_venta, f.numero, f.total, f.entidad_id, "
+        "  m.razon_social AS entidad, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS pagado "
+        "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit "
+        "WHERE f.cliente_id=?" + filtro_ent + " ORDER BY f.fecha", [cid] + arg_ent))
+    impagas = []
+    for f in facturas:
+        f["saldo"] = round(f["total"] - f["pagado"], 2)
+        if abs(f["saldo"]) < 0.01:
+            continue
+        try:
+            f["dias"] = (hoy_d - datetime.fromisoformat(f["fecha"][:10]).date()).days
+        except Exception:
+            f["dias"] = None
+        impagas.append(f)
+
+    # 4) Cheques en cartera: plata parada que no se depositó ni se endosó.
+    cheques = filas(con.execute(
+        "SELECT ch.id, ch.numero, ch.banco, ch.fecha_pago, ch.importe, ch.cuit_librador, "
+        "  m.razon_social AS librador FROM cheques ch "
+        "LEFT JOIN maestro_entidades m ON m.cuit=ch.cuit_librador "
+        "WHERE ch.cliente_id=? AND ch.estado='en_cartera' ORDER BY ch.fecha_pago", (cid,)))
+
+    con.close()
+    return jsonify({
+        "banco_sin_registrar": banco,
+        "pagos_a_cuenta": pagos,
+        "facturas_impagas": impagas,
+        "cheques_en_cartera": cheques,
+        "resumen": {
+            "banco": len(banco),
+            "banco_resolubles": sum(1 for b in banco if b["unico"]),
+            "pagos": len(pagos),
+            "pagos_importe": round(sum(p["a_cuenta"] for p in pagos), 2),
+            "impagas": len(impagas),
+            "impagas_importe": round(sum(f["saldo"] for f in impagas), 2),
+            "cheques": len(cheques),
+            "cheques_importe": round(sum(c["importe"] for c in cheques), 2),
+        },
+    })
+
+
+@app.post("/api/c/pagos/<int:pid>/imputar")
+def api_pago_imputar(pid):
+    """Imputa un pago a cuenta contra las facturas impagas de esa entidad.
+
+    Por defecto FIFO —de la más vieja a la más nueva, regla de B1— y se puede
+    mandar `facturas: [ids]` para elegir a mano. Nunca imputa más de lo que le
+    queda al pago ni más de lo que debe cada factura."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    pago = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not pago:
+        con.close()
+        return jsonify({"error": "pago inexistente para este cliente"}), 404
+    aplicado = _n(con.execute(
+        "SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones WHERE pago_id=?", (pid,)).fetchone()[0])
+    resto = round(pago["total"] - aplicado, 2)
+    if resto <= 0.01:
+        con.close()
+        return jsonify({"error": "este pago ya está imputado por completo"}), 400
+
+    b = request.get_json(force=True, silent=True) or {}
+    # Un cobro cancela ventas y un pago cancela compras: la dirección no se mezcla.
+    esperado = "venta" if pago["direccion"] == "cobro" else "compra"
+    q = ("SELECT f.id, f.total, f.fecha, "
+         "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS pagado "
+         "FROM facturas f WHERE f.cliente_id=? AND f.entidad_id=? AND f.mov=? ")
+    args = [cli["id"], pago["entidad_id"], esperado]
+    if b.get("facturas"):
+        q += " AND f.id IN (%s)" % ",".join("?" * len(b["facturas"]))
+        args += list(b["facturas"])
+    candidatas = [f for f in filas(con.execute(q + " ORDER BY f.fecha", args))
+                  if round(f["total"] - f["pagado"], 2) > 0.01]
+
+    hechas = []
+    for f in candidatas:
+        if resto <= 0.01:
+            break
+        cuanto = round(min(resto, f["total"] - f["pagado"]), 2)
+        con.execute(
+            "INSERT INTO pago_aplicaciones (pago_id, factura_id, importe) VALUES (?,?,?) "
+            "ON CONFLICT (pago_id, factura_id) DO UPDATE SET importe=importe+excluded.importe",
+            (pid, f["id"], cuanto))
+        resto = round(resto - cuanto, 2)
+        hechas.append({"factura_id": f["id"], "importe": cuanto})
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "imputado": hechas, "queda_a_cuenta": resto})
+
+
+@app.post("/api/c/facturas/<int:fid>/actividad")
+def api_factura_actividad(fid):
+    """Asigna el par actividad+alícuota a una venta que quedó sin él — es lo
+    que destraba el control de la DJ."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    f = _de_este_cliente(con, "facturas", fid, cli["id"])
+    if not f:
+        con.close()
+        return jsonify({"error": "factura inexistente para este cliente"}), 404
+    if f["mov"] != "venta":
+        con.close()
+        return jsonify({"error": "la actividad de IIBB es de las ventas"}), 400
+    b = request.get_json(force=True)
+    alic = None if b.get("alicuota") in (None, "") else _n(b["alicuota"])
+    act = con.execute(
+        "SELECT * FROM maestro_actividades WHERE cuit=? AND codigo=? AND alicuota=?",
+        (cli["cuit"], b.get("codigo"), alic)).fetchone()
+    if not act:
+        con.close()
+        return jsonify({"error": "ese par actividad+alícuota no está en el padrón del cliente"}), 400
+    con.execute(
+        "UPDATE facturas SET iibb_jurisdiccion=?, iibb_codigo=?, iibb_alicuota=? WHERE id=?",
+        (act["jurisdiccion"], act["codigo"], act["alicuota"], fid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
 if __name__ == "__main__":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
