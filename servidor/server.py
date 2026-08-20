@@ -47,6 +47,25 @@ app = Flask(__name__)
 CORS(app)
 
 
+@app.after_request
+def _permitir_red_privada(resp):
+    """Deja que la pantalla publicada en la nube le hable a ESTE equipo.
+
+    Chrome trata una página https que llama a `http://localhost` como acceso a
+    red privada (PNA): manda un preflight con
+    `Access-Control-Request-Private-Network` y solo sigue si el servidor local
+    contesta que sí. Sin esta cabecera, la app publicada muestra un error de
+    red que no explica nada.
+
+    Lo que NO cambia: los datos del cliente nunca viajan a internet. El
+    navegador baja la pantalla de la nube y los datos los pide acá, en la
+    máquina del estudio.
+    """
+    if request.headers.get("Access-Control-Request-Private-Network"):
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
+    return resp
+
+
 # ══ base ════════════════════════════════════════════════════════════════════
 def db():
     con = sqlite3.connect(DB_PATH)

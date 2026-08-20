@@ -40,14 +40,13 @@ También está en `.claude/launch.json` como `erben-estudio`.
 
 | Módulo | Qué hace |
 |---|---|
-| **Tesorería** | la casa nueva, igual que la del ERP: **Tablero** (los huecos accionables), **Cuenta corriente** (le debo / me debe, con el bloque SUGERENCIAS), **Posición hoy**, **Vencimientos** y **Documentos** (la vista única con la escalera). Sin documentación de obra: un estudio no certifica obras |
+| **Tesorería** | la casa nueva, igual que la del ERP: **Tablero** (los huecos accionables), **Cuenta corriente** (le debo / me debe, con el bloque SUGERENCIAS), **Posición hoy**, **Conciliación**, **Vencimientos** y **Documentos** (la vista única con la escalera). Sin documentación de obra: un estudio no certifica obras |
 | **Facturas** | compras y ventas con IVA discriminado; las ventas llevan el **par actividad+alícuota** de IIBB (default: la actividad principal) y se puede corregir en la grilla — la clasificación fiscal vive acá, no en Tesorería |
 | **Impuestos** | vencimientos (ARCA y provincias) + **liquidación de IVA** del período: débito − crédito − percepciones |
 | **DJ IIBB** | base por actividad del período, con el **control Σ bases == Σ ventas**: si no cierra, no se presenta |
 | **Bancos** | cuentas y extracto; los movimientos se van completando con CUIT y recibo |
 | **Cheques** | solo dos clases: **cobrados** (entran únicamente por una cobranza; se depositan o endosan) y **emitidos**. No hay "me dieron" ni "me prestaron" |
 | **Pagos** | cancela facturas con movimientos de banco, cheques o efectivo |
-| **Conciliación** | automática cuando hay **un único** candidato; con dos o más decide una persona |
 | **Entidades** | la relación de este cliente, sobre el maestro único por CUIT |
 | **Parsers y jobs** | la suite: traer info de bancos, ARCA y DGR — y **llevar la DJ liquidada al portal** para que la persona presente |
 
@@ -83,6 +82,18 @@ adivinar rompe la cuenta corriente en silencio.
 - [ ] Cargar los vencimientos de ARCA desde los jobs de la suite
 - [ ] Importar extractos bancarios desde los parsers (hoy el alta es manual o por lote vía API)
 - [ ] Login del estudio y permisos por contador
+
+## Dónde corre
+
+Tres capas, y la que importa entender: **los datos del cliente nunca pasan por
+internet**. La nube sirve la pantalla; el navegador le pide los datos al equipo
+del estudio. Ver `DESPLIEGUE.md`.
+
+| Capa | Qué tiene |
+|---|---|
+| Vercel | solo `sistema/` — HTML y JS, cero datos |
+| El equipo del estudio | server + API + base + credenciales + parsers |
+| Drive del cliente | archivo y respaldo: extractos, comprobantes, constancias |
 
 ## Qué se hereda de nuestro sistema
 

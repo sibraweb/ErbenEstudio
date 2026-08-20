@@ -134,7 +134,8 @@ const MODULOS = [
   ['bancos',       'Bancos'],
   ['cheques',      'Cheques'],
   ['pagos',        'Pagos'],
-  ['conciliacion', 'Conciliación'],
+  // Conciliación NO es un módulo suelto: vive DENTRO de Tesorería, como en el
+  // ERP (TESORERIA__DEFINICION.md — «el conciliador vive dentro de Tesorería»).
   ['impuestos',    'Impuestos'],
   ['iibb',         'DJ IIBB'],
   ['entidades',    'Entidades'],
@@ -164,10 +165,22 @@ function toast(msg, malo){
 // (2026-08-18). En un sistema donde cada empresa es un compartimiento estanco,
 // una pintada tardía es lo más parecido a un dato filtrado — así que la
 // promesa se abandona en silencio y ese render nunca termina.
+// ── DÓNDE ESTÁ LA API ──
+// La pantalla puede venir de dos lados: servida por el equipo local (mismo
+// origen, ruta relativa) o publicada en la nube. En el segundo caso la API
+// SIGUE SIENDO LA LOCAL: los datos del cliente nunca pasan por internet —
+// el navegador habla directo con la máquina del estudio.
+const API = (function(){
+  const guardado = localStorage.getItem('ee-api');
+  if (guardado !== null) return guardado;
+  const local = ['localhost', '127.0.0.1', ''].includes(location.hostname);
+  return local ? '' : 'http://localhost:8310';
+})();
+
 const marca = () => (location.hash || '') + '|' + (CLI ? CLI.alias : '');
 async function api(ruta, opts){
   const sep = ruta.includes('?') ? '&' : '?';
-  const url = ruta + (CLI && ruta.startsWith('/api/c/') ? sep + 'cliente=' + encodeURIComponent(CLI.alias) : '');
+  const url = API + ruta + (CLI && ruta.startsWith('/api/c/') ? sep + 'cliente=' + encodeURIComponent(CLI.alias) : '');
   const antes = marca();
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({error:'respuesta ilegible del servidor'}));
@@ -204,8 +217,7 @@ function colorFecha(f){
 /* ── el filtro de empresa: manda sobre todos los módulos ── */
 async function arrancar(){
   try{ CLIENTES = await api('/api/clientes'); }
-  catch(e){ $('#vista').innerHTML = `<div class="vacio">No pude hablar con el servidor.<br>
-    <span class="mini">${esc(e.message)}</span></div>`; return; }
+  catch(e){ return sinEquipoLocal(e); }
   if (!CLIENTES.length){
     $('#sel-empresa').innerHTML = '<option>— sin clientes —</option>';
     $('#nav').innerHTML = MODULOS.filter(m => m[0]==='clientes')
@@ -219,6 +231,45 @@ async function arrancar(){
   const inicial = CLIENTES.find(c => c.alias === guardado) || CLIENTES[0];
   await cambiarEmpresa(inicial.alias, true);
 }
+/* El modo de falla obvio cuando la pantalla vive en la nube: el equipo del
+   estudio está apagado. Decirlo con todas las letras — un "error de red" hace
+   que la gente crea que se perdieron los datos. */
+function sinEquipoLocal(e){
+  const enLaNube = API !== '';
+  $('#sel-empresa').innerHTML = '<option>— sin conexión —</option>';
+  $('#nav').innerHTML = '';
+  $('#vista').innerHTML = `
+    <div class="panel" style="max-width:640px;margin:40px auto;border-left:3px solid var(--warn)">
+      <div class="panel-h"><b>No encuentro el equipo del estudio</b></div>
+      <div class="panel-b">
+        ${enLaNube ? `
+          <p style="margin-bottom:10px">Esta pantalla vive en internet, pero <b>los datos están en la
+            computadora del estudio</b> y no pasan por la nube. Para trabajar, esa máquina tiene que
+            estar prendida con el sistema abierto.</p>
+          <ol style="margin:0 0 12px 20px;color:var(--txt2)">
+            <li>Andá a la computadora del estudio</li>
+            <li>Doble clic en el ícono <b>ERBEN ESTUDIO</b></li>
+            <li>Dejá esa ventana abierta y recargá acá</li>
+          </ol>
+          <div class="mini">Buscando en <code>${esc(API)}</code></div>`
+        : `<p>El servidor no está respondiendo. Cerrá y volvé a abrir el ícono
+             <b>ERBEN ESTUDIO</b>.</p>`}
+        <div class="mini" style="margin-top:10px">Detalle: ${esc(e.message)}</div>
+        <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="arrancar()">Reintentar</button>
+          <button class="g" onclick="cambiarApi()">Cambiar la dirección del equipo</button>
+        </div>
+      </div>
+    </div>`;
+}
+function cambiarApi(){
+  const v = prompt('¿En qué dirección está el equipo del estudio?\n\n' +
+    'Dejalo vacío si la pantalla la sirve el mismo equipo.', API);
+  if (v === null) return;
+  localStorage.setItem('ee-api', v.trim().replace(/\/$/, ''));
+  location.reload();
+}
+
 async function cambiarEmpresa(alias, primera){
   CLI = CLIENTES.find(c => c.alias === alias);
   if (!CLI) return;
@@ -249,7 +300,7 @@ function router(){
   const v = (location.hash || '#tesoreria').slice(1);
   MODULOS.forEach(([k]) => $('#nav-'+k)?.classList.toggle('on', k === v));
   const f = {tesoreria:vTesoreria, facturas:vFacturas, bancos:vBancos, cheques:vCheques, pagos:vPagos,
-    conciliacion:vConciliacion, impuestos:vImpuestos, iibb:vIIBB, entidades:vEntidades,
+    impuestos:vImpuestos, iibb:vIIBB, entidades:vEntidades,
     jobs:vJobs, clientes:vClientes}[v] || vTesoreria;
   if (!CLI && v !== 'clientes') return vClientes();
   f();
@@ -263,14 +314,14 @@ const cargando = t => pintar(`<h2>${t}</h2><div class="vacio">Cargando…</div>`
 let tTab = 'tab', tEnt = null, tabEnt = '';
 async function vTesoreria(){
   cargando('Tesorería');
-  const tabs = [['tab','Tablero'],['cc','Cuenta corriente'],['pos','Posición hoy'],
-                ['ven','Vencimientos'],['doc','Documentos']];
+  const tabs = [['tab','Tablero'],['cc','Cuenta corriente'],['conc','Conciliación'],
+                ['pos','Posición hoy'],['ven','Vencimientos'],['doc','Documentos']];
   pintar(`<h2>Tesorería</h2>
     <div class="sub">Todo lo de ${esc(CLI.razon_social)} — la empresa se cambia arriba.</div>
     <div class="tabs">${tabs.map(([k,t]) =>
       `<button class="${tTab===k?'on':''}" onclick="tTab='${k}';tEnt=null;vTesoreria()">${t}</button>`).join('')}</div>
     <div id="t-panel"><div class="vacio">Cargando…</div></div>`);
-  ({tab:tTablero, cc:tCC, pos:tPos, ven:tVen, doc:tDoc}[tTab])();
+  ({tab:tTablero, cc:tCC, conc:tConc, pos:tPos, ven:tVen, doc:tDoc}[tTab])();
 }
 
 /* ── EL TABLERO: los huecos, todos accionables desde acá ──
@@ -304,7 +355,7 @@ async function tTablero(){
 
     ${t.banco_sin_registrar.length ? `<div class="panel" style="margin-top:16px">
       <div class="panel-h"><b>Banco sin registrar — ${t.banco_sin_registrar.length}</b>
-        <a href="#conciliacion"><button class="g xs">Ir a conciliación</button></a></div>
+        <button class="g xs" onclick="tTab='conc';vTesoreria()">Ir a conciliación</button></div>
       <div class="panel-b">${t.banco_sin_registrar.map(m => `
         <div class="cand" style="display:block">
           <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
@@ -745,7 +796,7 @@ async function vBancos(){
       </div></div>
     </div>
     <div class="panel"><div class="panel-h"><b>${ms.length} movimiento(s)</b>
-      <a href="#conciliacion"><button class="g xs">Ir a conciliación</button></a></div>
+      <button class="g xs" onclick="location.hash='#tesoreria';setTimeout(()=>{tTab='conc';vTesoreria()},400)">Ir a conciliación</button></div>
       ${ms.length ? tabla(['Fecha','Banco','Descripción','CUIT','Importe','Estado'],
         ms.map(m => [fecha(m.fecha), esc(m.banco),
           `${esc(m.descripcion||'—')}${m.pago_id ? `<div class="cadena">↳ <i>recibo #${m.pago_id}</i></div>` : ''}`,
@@ -961,15 +1012,15 @@ async function guardarPago(){
   }catch(e){ toast(e.message, true); }
 }
 
-/* ══ CONCILIACIÓN ══ */
-async function vConciliacion(){
-  cargando('Conciliación');
+/* ══ CONCILIACIÓN — pestaña de Tesorería ══
+   El conciliador vive DENTRO de Tesorería (TESORERIA__DEFINICION.md): es un
+   cruce de plata, no una pantalla aparte. */
+async function tConc(){
   const ps = await api('/api/c/conciliacion');
   const unicos = ps.filter(p => p.unico).length, ambiguos = ps.filter(p => p.candidatos.length > 1).length;
-  pintar(`
-    <h2>Conciliación</h2>
-    <div class="sub">Se concilia solo lo que tiene <b>un único</b> candidato. Con dos o más decide una persona:
-      adivinar rompe la cuenta corriente en silencio.</div>
+  panelT(`
+    <div class="aviso">Se concilia solo lo que tiene <b>un único</b> candidato. Con dos o más decide una
+      persona: adivinar rompe la cuenta corriente en silencio. Cada conciliación deja su recibo.</div>
     <div class="grid">
       <div class="card"><div class="k">Sin conciliar</div><div class="v">${ps.length}</div></div>
       <div class="card"><div class="k">Se pueden solas</div><div class="v pos">${unicos}</div></div>
@@ -996,12 +1047,12 @@ async function vConciliacion(){
 async function conciliarAuto(){
   try{ const r = await post('/api/c/conciliacion/auto', {});
     toast(`${r.conciliados} conciliada(s) · ${r.ambiguos} ambigua(s) · ${r.sin_candidato} sin candidato`);
-    vConciliacion();
+    vTesoreria();
   }catch(e){ toast(e.message, true); }
 }
 async function conciliarManual(mid, tipo, id){
   try{ await post('/api/c/conciliacion/manual', {movimiento_id:mid, tipo, id});
-    toast('Conciliado'); vConciliacion(); }catch(e){ toast(e.message, true); }
+    toast('Conciliado — y quedó el recibo'); vTesoreria(); }catch(e){ toast(e.message, true); }
 }
 
 /* ══ ENTIDADES ══ */

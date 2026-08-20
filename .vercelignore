@@ -1,0 +1,8 @@
+# A la nube va SOLO la pantalla. Nada de esto tiene que salir de la máquina:
+servidor/
+parsers/
+*.py
+*.bat
+*.ps1
+*.ico
+*.sqlite3
