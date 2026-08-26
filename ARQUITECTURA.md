@@ -104,3 +104,51 @@ Diseño (para el módulo facturas del estudio, y aplicable al ERP nuestro):
 - Usuarios del estudio: ¿cada contador ve todos los clientes o hay carteras?
   (el modelo de permisos se decide cuando exista el login).
 - Si el estudio factura sus honorarios desde acá o desde nuestro ERP.
+
+
+## 6. EL ALCANCE — qué hay y qué NO hay (Juan, 2026-08-26)
+
+Está acá porque la tentación permanente va a ser traer módulos del ERP "ya que
+están". El ERP resuelve una constructora; esto resuelve un estudio contable, y
+la mitad de aquello no aplica.
+
+### NO existe módulo Obra
+Sin OC, sin OT, sin certificados, **sin maestro de obras**. El circuito
+**arranca en la FACTURA** — no hay documento anterior que la origine.
+
+Consecuencia práctica: el Tablero de Tesorería no tiene el hueco "documentos de
+obra sin factura", y la vista Documentos no tiene esa clase. Un estudio contable
+no certifica obras.
+
+**Lo que sí queda preparado: CENTROS DE COSTO.** Tablas `centros_costo` y
+`factura_centros` (§11 del esquema) con endpoints andando, para clasificar una
+factura por destino cuando haga falta. El reparto es **por porcentaje desde el
+día uno** — una factura puede tocar dos centros, y en el ERP dejarlo como un
+solo campo obligó a rehacer la tabla.
+
+### Cheques: SOLO dos clases
+**Emitidos** (propios del cliente) y **cobrados** (entran únicamente por una
+cobranza; se depositan o se endosan).
+
+**No existe "me dieron" ni "me prestaron".** En el ERP esas dos clases arrastran
+todo el circuito de cliente real ↔ cliente de fantasía, el bloqueo del depósito
+hasta que aparezca la factura de venta, y la cadena de endosos. Nada de eso
+aplica acá y meterlo sería complejidad pura.
+
+### Tarjetas: todavía no
+El módulo no existe y no está previsto por ahora.
+
+### Los módulos que se usan
+Tesorería · Bancos · Cheques · Facturas · Pagos.
+Más los fiscales que se pidieron aparte (Impuestos y DJ IIBB) y la
+infraestructura (Entidades, Panel, Clientes del estudio).
+
+### El filtro de empresa
+Va **arriba, en el menú principal**. Se elige una empresa y todos los módulos
+muestran solo lo de ella.
+
+⚠ Es multiempresa en el sentido de que el estudio administra varias, **pero no
+se mezclan nunca**. En nuestro ERP las empresas son del mismo dueño y se
+consolidan; acá cada una es un cliente distinto del estudio y cruzarlas sería
+mostrarle a uno los datos de otro. Por eso no existe la opción "todas" — y el
+filtro se aplica en el servidor, no en la pantalla.

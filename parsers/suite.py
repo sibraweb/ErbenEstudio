@@ -82,6 +82,14 @@ JOBS = {
                 "Facturas.",
         "args": ["--alias"],
     },
+    "cargar_vencimientos": {
+        "archivo": "cargar_vencimientos.py", "propio": True,
+        "titulo": "Cargar las obligaciones impositivas",
+        "rubro": "impuestos", "fuente": None, "atendido": False,
+        "desc": "Lo que bajaron los jobs de ARCA y ATP -> modulo Impuestos, con "
+                "su ciclo de vida (a vencer / sin presentar / a pagar).",
+        "args": ["--alias"],
+    },
     "arca_vencimientos": {
         "archivo": "vencimientos_arca.py", "propio": False,
         "titulo": "ARCA — vencimientos",

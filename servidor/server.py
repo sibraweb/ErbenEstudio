@@ -23,6 +23,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -40,6 +41,11 @@ ATP_ESTADO = Path(r"H:\My Drive\web_sibra\tesoreria\atp\atp_estado.json")
 # Ventana de fechas para la conciliación automática. Un cheque se debita cerca
 # de su fecha de pago pero nunca clavado, y una transferencia puede impactar al
 # día siguiente. Más ancho que esto empieza a matchear cosas distintas.
+# El ciclo de vida de una obligación impositiva. El orden importa: una
+# obligación AVANZA y nunca vuelve atrás (ver api_vencimientos_alta).
+AVANCE_OBLIGACION = {"a_vencer": 0, "vencida_sin_presentar": 1,
+                     "dj_a_pagar": 2, "pagado": 3}
+
 DIAS_CHEQUE = 7
 DIAS_FACTURA = 10
 
@@ -129,6 +135,50 @@ def _huella_movimiento(fecha, importe, descripcion, referencia):
 def _migrar(con):
     """Cambios de esquema sobre una base que ya existe. Se corre en cada
     arranque: barato y evita que una instalación vieja quede rota en silencio."""
+    # ── el registro de corridas del panel ──
+    if not con.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name='jobs_corridas'").fetchone():
+        print("  migrando: registro de corridas del panel…")
+        con.executescript("""
+            CREATE TABLE jobs_corridas (
+                id INTEGER PRIMARY KEY, job TEXT NOT NULL, args TEXT, alias TEXT,
+                usuario TEXT, maquina TEXT, inicio TEXT NOT NULL, fin TEXT,
+                segundos REAL, estado TEXT NOT NULL, exit_code INTEGER, salida TEXT);
+            CREATE INDEX ix_corridas_job ON jobs_corridas(job, inicio DESC);""")
+        con.commit()
+
+    # ── centros de costo (arquitectura lista, sin módulo todavía) ──
+    if not con.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                       "AND name='centros_costo'").fetchone():
+        print("  migrando: centros de costo…")
+        con.executescript("""
+            CREATE TABLE centros_costo (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                codigo TEXT NOT NULL, nombre TEXT NOT NULL,
+                activo INTEGER NOT NULL DEFAULT 1, nota TEXT,
+                UNIQUE (cliente_id, codigo));
+            CREATE INDEX ix_centros_cliente ON centros_costo(cliente_id);
+            CREATE TABLE factura_centros (
+                id INTEGER PRIMARY KEY,
+                factura_id INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+                centro_id INTEGER NOT NULL REFERENCES centros_costo(id),
+                porcentaje REAL NOT NULL,
+                UNIQUE (factura_id, centro_id));
+            CREATE INDEX ix_factcentro ON factura_centros(centro_id);""")
+        con.commit()
+
+    # ── ciclo de vida de las obligaciones ──
+    cv = {f[1] for f in con.execute("PRAGMA table_info(vencimientos)")}
+    if "codigo" not in cv:
+        print("  migrando: ciclo de vida de las obligaciones impositivas…")
+        con.execute("ALTER TABLE vencimientos ADD COLUMN codigo TEXT")
+        con.execute("ALTER TABLE vencimientos ADD COLUMN actualizado TEXT")
+        # los estados viejos al ciclo nuevo
+        con.execute("UPDATE vencimientos SET estado='a_vencer' WHERE estado='pendiente'")
+        con.execute("UPDATE vencimientos SET estado='dj_a_pagar' WHERE estado='presentado'")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -1179,15 +1229,35 @@ def api_vencimientos_alta():
     lote = b.get("vencimientos") or [b]
     n = 0
     for v in lote:
-        if not (v.get("impuesto") and v.get("periodo") and v.get("fecha")):
+        if not (v.get("impuesto") and v.get("periodo")):
             continue
+        estado = v.get("estado") or "a_vencer"
+        if estado not in AVANCE_OBLIGACION:
+            estado = "a_vencer"
+        # ⚠ NUNCA retroceder el estado. Una obligación avanza:
+        #   a_vencer → vencida_sin_presentar → dj_a_pagar → pagado
+        # Si el portal la sigue mostrando en la pestaña vieja (se solapan), o
+        # si alguien la marcó pagada a mano, una recarga NO puede volverla
+        # atrás: haría reaparecer como pendiente algo que ya se pagó.
+        previo = con.execute(
+            "SELECT estado, importe FROM vencimientos WHERE cliente_id=? AND fuente=? "
+            "AND impuesto=? AND periodo=?",
+            (cli["id"], v.get("fuente") or "arca", v["impuesto"], v["periodo"])).fetchone()
+        if previo and AVANCE_OBLIGACION.get(previo["estado"], 0) > AVANCE_OBLIGACION[estado]:
+            estado = previo["estado"]
+        fecha = (v.get("fecha") or (previo["fecha"] if previo and "fecha" in previo.keys() else None)
+                 or _hoy())[:10]
         con.execute(
-            "INSERT INTO vencimientos (cliente_id, fuente, impuesto, periodo, fecha, importe, estado, nota) "
-            "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (cliente_id, fuente, impuesto, periodo) "
-            "DO UPDATE SET fecha=excluded.fecha, importe=excluded.importe, estado=excluded.estado",
-            (cli["id"], v.get("fuente") or "arca", v["impuesto"], v["periodo"], v["fecha"][:10],
+            "INSERT INTO vencimientos (cliente_id, fuente, impuesto, codigo, periodo, fecha, importe, "
+            " estado, nota, actualizado) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (cliente_id, fuente, impuesto, periodo) DO UPDATE SET "
+            " fecha=excluded.fecha, importe=COALESCE(excluded.importe, vencimientos.importe), "
+            " codigo=COALESCE(excluded.codigo, vencimientos.codigo), "
+            " estado=excluded.estado, actualizado=excluded.actualizado",
+            (cli["id"], v.get("fuente") or "arca", v["impuesto"], v.get("codigo"),
+             v["periodo"], fecha,
              None if v.get("importe") in (None, "") else _n(v["importe"]),
-             v.get("estado") or "pendiente", v.get("nota")))
+             estado, v.get("nota"), _hoy()))
         n += 1
     con.commit()
     con.close()
@@ -1815,12 +1885,104 @@ def api_factura_actividad(fid):
 # Los jobs ATENDIDOS abren su propia ventana y esperan a una persona, así que
 # corren en un hilo y su salida se lee después: si el request esperara, el
 # navegador se quedaría colgado los 8 minutos del login.
+# ══ CENTROS DE COSTO ═══════════════════════════════════════════════════════
+# ERBEN no tiene módulo Obra (Juan, 2026-08-26): sin OC, sin OT, sin
+# certificados — el circuito arranca en la FACTURA. Esto es solo la
+# clasificación por destino, y el reparto es por porcentaje desde el principio
+# porque una factura puede tocar dos centros (lección del ERP).
+
+@app.get("/api/c/centros")
+def api_centros():
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    r = filas(con.execute(
+        "SELECT c.*, "
+        "  (SELECT COUNT(*) FROM factura_centros fc WHERE fc.centro_id=c.id) AS facturas, "
+        "  (SELECT ROUND(SUM(f.total * fc.porcentaje / 100.0), 2) FROM factura_centros fc "
+        "   JOIN facturas f ON f.id=fc.factura_id WHERE fc.centro_id=c.id) AS imputado "
+        "FROM centros_costo c WHERE c.cliente_id=? AND c.activo=1 ORDER BY c.codigo",
+        (cli["id"],)))
+    con.close()
+    return jsonify(r)
+
+
+@app.post("/api/c/centros")
+def api_centros_alta():
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    codigo = (b.get("codigo") or "").strip()
+    nombre = (b.get("nombre") or "").strip()
+    if not (codigo and nombre):
+        con.close()
+        return jsonify({"error": "hacen falta código y nombre"}), 400
+    try:
+        cur = con.execute(
+            "INSERT INTO centros_costo (cliente_id, codigo, nombre, nota) VALUES (?,?,?,?)",
+            (cli["id"], codigo, nombre, b.get("nota")))
+    except sqlite3.IntegrityError:
+        con.close()
+        return jsonify({"error": "ya existe un centro con ese código"}), 409
+    con.commit()
+    cid = cur.lastrowid
+    con.close()
+    return jsonify({"ok": True, "id": cid})
+
+
+@app.post("/api/c/facturas/<int:fid>/centros")
+def api_factura_centros(fid):
+    """Reparte una factura entre centros. `centros: [{centro_id, porcentaje}]`.
+
+    Los porcentajes tienen que sumar 100: un reparto que no cierra deja plata
+    sin imputar y el informe por centro miente sin avisar. Lista vacía = sacar
+    el reparto (la factura vuelve a estar sin clasificar)."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "facturas", fid, cli["id"]):
+        con.close()
+        return jsonify({"error": "factura inexistente para este cliente"}), 404
+    lote = (request.get_json(force=True) or {}).get("centros") or []
+    for c in lote:
+        if not con.execute("SELECT 1 FROM centros_costo WHERE id=? AND cliente_id=?",
+                           (c.get("centro_id"), cli["id"])).fetchone():
+            con.close()
+            return jsonify({"error": "centro inexistente para este cliente"}), 400
+    if lote:
+        suma = round(sum(_n(c.get("porcentaje")) for c in lote), 2)
+        if abs(suma - 100) > 0.01:
+            con.close()
+            return jsonify({"error": f"los porcentajes suman {suma}, tienen que sumar 100"}), 400
+    con.execute("DELETE FROM factura_centros WHERE factura_id=?", (fid,))
+    for c in lote:
+        con.execute("INSERT INTO factura_centros (factura_id, centro_id, porcentaje) VALUES (?,?,?)",
+                    (fid, c["centro_id"], _n(c["porcentaje"])))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "centros": len(lote)})
+
+
+# ══ EL PANEL — servidores, jobs y el registro de lo que se corrió ══════════
+# Trae la lección del panel del ERP: los jobs se corrían con .bat que imprimían
+# a consola, y al cerrar la ventana no quedaba registro de NADA. Sin historial
+# no se puede contestar "¿esto se corrió?" ni "¿por qué falló?".
+#
+# Acá las corridas van a la BASE, no a memoria: reiniciar el sistema no borra
+# el historial.
+import getpass
+import platform
+import socket
 import threading
-import uuid
 
 sys.path.insert(0, str(RAIZ / "parsers"))
-_CORRIDAS = {}          # id -> {job, args, estado, salida, inicio, fin, codigo}
-_CORRIDAS_LOCK = threading.Lock()
 
 
 def _suite():
@@ -1831,63 +1993,143 @@ def _suite():
     return importlib.reload(_s)
 
 
+def _puerto_vivo(puerto, host="127.0.0.1", timeout=0.4):
+    with socket.socket() as s:
+        s.settimeout(timeout)
+        return s.connect_ex((host, puerto)) == 0
+
+
+# Los servicios que el estudio puede tener prendidos. El de ERBEN es este
+# mismo; los otros son de SIBRA y solo se MIRAN — el panel del estudio no
+# arranca procesos de otro sistema.
+SERVICIOS = [
+    {"id": "erben", "nombre": "ERBEN ESTUDIO", "puerto": 8310, "propio": True,
+     "nota": "El sistema. Lo prende el ícono del escritorio."},
+    {"id": "tesoreria", "nombre": "Tesorería SIBRA", "puerto": 8300, "propio": False,
+     "nota": "De nuestro sistema. No hace falta para que ERBEN funcione."},
+]
+
+
+@app.get("/api/panel")
+def api_panel():
+    """Cómo está el equipo: el sistema, la base, los clientes y qué falta."""
+    con = db()
+    uno = lambda q: con.execute(q).fetchone()[0]
+    clientes_n = uno("SELECT COUNT(*) FROM clientes WHERE activo=1")
+    datos = {
+        "clientes": clientes_n,
+        "entidades": uno("SELECT COUNT(*) FROM maestro_entidades"),
+        "facturas": uno("SELECT COUNT(*) FROM facturas"),
+        "movimientos": uno("SELECT COUNT(*) FROM movimientos_banco"),
+        "sin_conciliar": uno("SELECT COUNT(*) FROM movimientos_banco WHERE conciliado=0"),
+        "cheques": uno("SELECT COUNT(*) FROM cheques"),
+    }
+    corridas = filas(con.execute(
+        "SELECT id, job, alias, inicio, fin, segundos, estado, exit_code "
+        "FROM jobs_corridas ORDER BY inicio DESC LIMIT 25"))
+    con.close()
+
+    # lo que falta para que el sistema trabaje solo
+    faltan = []
+    try:
+        s = _suite()
+        import credenciales as cred
+        for j in s.catalogo():
+            for c in j["clientes"]:
+                if c["credencial"] is False:
+                    faltan.append({"que": "credencial", "fuente": j["fuente"],
+                                   "alias": c["alias"]})
+        faltan = [dict(x) for x in {tuple(sorted(f.items())): f for f in faltan}.values()]
+    except Exception:
+        pass
+    drive = Path(r"C:\SIBRA\estudio\credentials.json")
+    if not drive.exists():
+        faltan.append({"que": "credentials.json de Google", "fuente": "drive", "alias": None})
+
+    return jsonify({
+        "base": {"ruta": str(DB_PATH), "existe": DB_PATH.exists(),
+                 "mb": round(DB_PATH.stat().st_size / 1048576, 2) if DB_PATH.exists() else 0},
+        "equipo": {"maquina": platform.node(), "usuario": getpass.getuser()},
+        "datos": datos,
+        "servicios": [{**s, "vivo": _puerto_vivo(s["puerto"])} for s in SERVICIOS],
+        "faltan": faltan,
+        "corridas": corridas,
+    })
+
+
 @app.get("/api/jobs")
 def api_jobs():
     try:
         cat = _suite().catalogo()
     except Exception as e:
         return jsonify({"error": f"no pude leer la suite de jobs: {e}"}), 500
-    with _CORRIDAS_LOCK:
-        ultimas = {}
-        for c in _CORRIDAS.values():
-            v = ultimas.get(c["job"])
-            if not v or c["inicio"] > v["inicio"]:
-                ultimas[c["job"]] = c
+    con = db()
     for j in cat:
-        u = ultimas.get(j["clave"])
-        j["ultima_corrida"] = {k: u[k] for k in ("id", "estado", "inicio", "fin", "codigo")} if u else None
+        u = con.execute(
+            "SELECT id, estado, inicio, fin, segundos, exit_code, alias FROM jobs_corridas "
+            "WHERE job=? ORDER BY inicio DESC LIMIT 1", (j["clave"],)).fetchone()
+        j["ultima_corrida"] = dict(u) if u else None
+    con.close()
     return jsonify(cat)
 
 
 @app.post("/api/jobs/<clave>/correr")
 def api_job_correr(clave):
     b = request.get_json(force=True, silent=True) or {}
-    args = []
+    args, alias = [], None
     for k, v in (b.get("args") or {}).items():
-        if v not in (None, ""):
-            args += [k, str(v)]
-    cid = uuid.uuid4().hex[:8]
-    with _CORRIDAS_LOCK:
-        _CORRIDAS[cid] = {"id": cid, "job": clave, "args": args, "estado": "corriendo",
-                          "salida": "", "inicio": datetime.now().isoformat(timespec="seconds"),
-                          "fin": None, "codigo": None}
+        if v in (None, ""):
+            continue
+        args += [k, str(v)]
+        if k == "--alias":
+            alias = str(v)
+
+    con = db()
+    cur = con.execute(
+        "INSERT INTO jobs_corridas (job, args, alias, usuario, maquina, inicio, estado) "
+        "VALUES (?,?,?,?,?,?,'corriendo')",
+        (clave, " ".join(args), alias, getpass.getuser(), platform.node(),
+         datetime.now().isoformat(timespec="seconds")))
+    cid = cur.lastrowid
+    con.commit()
+    con.close()
+
+    arranque = time.time()
 
     def correr():
         try:
             codigo, salida = _suite().correr(clave, args)
         except Exception as e:
             codigo, salida = 2, f"No se pudo lanzar el job: {e}"
-        with _CORRIDAS_LOCK:
-            _CORRIDAS[cid].update(
-                estado=("ok" if codigo == 0 else "falló"), codigo=codigo, salida=salida,
-                fin=datetime.now().isoformat(timespec="seconds"))
+        c2 = db()
+        c2.execute(
+            "UPDATE jobs_corridas SET estado=?, exit_code=?, salida=?, fin=?, segundos=? WHERE id=?",
+            ("ok" if codigo == 0 else "falló", codigo, salida,
+             datetime.now().isoformat(timespec="seconds"),
+             round(time.time() - arranque, 1), cid))
+        c2.commit()
+        c2.close()
 
     threading.Thread(target=correr, daemon=True).start()
     return jsonify({"ok": True, "id": cid})
 
 
-@app.get("/api/jobs/corrida/<cid>")
+@app.get("/api/jobs/corrida/<int:cid>")
 def api_job_corrida(cid):
-    with _CORRIDAS_LOCK:
-        c = _CORRIDAS.get(cid)
-        return jsonify(dict(c)) if c else (jsonify({"error": "no existe esa corrida"}), 404)
+    con = db()
+    c = con.execute("SELECT * FROM jobs_corridas WHERE id=?", (cid,)).fetchone()
+    con.close()
+    return jsonify(dict(c)) if c else (jsonify({"error": "no existe esa corrida"}), 404)
 
 
 @app.get("/api/jobs/corridas")
 def api_job_corridas():
-    with _CORRIDAS_LOCK:
-        cs = sorted(_CORRIDAS.values(), key=lambda x: x["inicio"], reverse=True)[:20]
-        return jsonify([{k: v for k, v in c.items() if k != "salida"} for c in cs])
+    con = db()
+    cs = filas(con.execute(
+        "SELECT id, job, args, alias, usuario, inicio, fin, segundos, estado, exit_code "
+        "FROM jobs_corridas ORDER BY inicio DESC LIMIT 30"))
+    con.close()
+    return jsonify(cs)
 
 
 if __name__ == "__main__":

@@ -139,7 +139,7 @@ const MODULOS = [
   ['impuestos',    'Impuestos'],
   ['iibb',         'DJ IIBB'],
   ['entidades',    'Entidades'],
-  ['jobs',         'Parsers y jobs'],
+  ['panel',        'Panel'],
   ['clientes',     'Clientes del estudio'],
 ];
 
@@ -301,7 +301,7 @@ function router(){
   MODULOS.forEach(([k]) => $('#nav-'+k)?.classList.toggle('on', k === v));
   const f = {tesoreria:vTesoreria, facturas:vFacturas, bancos:vBancos, cheques:vCheques, pagos:vPagos,
     impuestos:vImpuestos, iibb:vIIBB, entidades:vEntidades,
-    jobs:vJobs, clientes:vClientes}[v] || vTesoreria;
+    panel:vPanel, clientes:vClientes}[v] || vTesoreria;
   if (!CLI && v !== 'clientes') return vClientes();
   f();
 }
@@ -1092,26 +1092,62 @@ async function altaEntidad(){
   }catch(e){ toast(e.message, true); }
 }
 
-/* ══ PARSERS Y JOBS ══
-   La suite: traer info de bancos, ARCA y DGR, y llevar la DJ al portal.
-   Los jobs ATENDIDOS abren su ventana y esperan a una persona. */
+/* ══ EL PANEL ══
+   Cómo está el equipo, qué servicios corren y qué se puede correr.
+   Lección del panel del ERP: sin registro de las corridas no se puede
+   contestar "¿esto se corrió?" ni "¿por qué falló?" — por eso el historial
+   vive en la base y no se pierde al apagar. */
 const RUBROS_JOB = {impuestos:'Impuestos — ARCA y las provincias', bancos:'Bancos — extractos y cheques'};
-async function vJobs(){
-  cargando('Parsers y jobs');
-  const js = await api('/api/jobs');
-  if (js.error) return pintar(`<h2>Parsers y jobs</h2><div class="vacio">${esc(js.error)}</div>`);
+async function vPanel(){
+  cargando('Panel');
+  const [p, js] = await Promise.all([api('/api/panel'), api('/api/jobs')]);
+  if (js.error) return pintar(`<h2>Panel</h2><div class="vacio">${esc(js.error)}</div>`);
+  const d = p.datos;
   pintar(`
-    <h2>Parsers y jobs</h2>
-    <div class="sub">Traen la información de los portales a este sistema — y llevan la DJ de vuelta.
-      Los marcados <b>atendido</b> abren una ventana y esperan que entres vos (2FA o captcha).</div>
+    <h2>Panel</h2>
+    <div class="sub">El estado del equipo y todo lo que se puede correr.
+      Los jobs marcados <b>atendido</b> abren una ventana y esperan que entres vos (2FA o captcha).</div>
+
+    <div class="panel"><div class="panel-h"><b>Servicios</b>
+      <span class="mini">${esc(p.equipo.maquina)} · ${esc(p.equipo.usuario)}</span></div>
+      ${tabla(['Servicio','Puerto','Estado','Nota'],
+        p.servicios.map(s => [
+          `<b>${esc(s.nombre)}</b>${s.propio ? '' : ' <span class="badge b-mut">otro sistema</span>'}`,
+          s.puerto,
+          s.vivo ? '<span class="badge b-ok">prendido</span>'
+                 : '<span class="badge b-mut">apagado</span>',
+          `<span class="mini">${esc(s.nota)}</span>`]))}
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="k">Clientes</div><div class="v">${d.clientes}</div></div>
+      <div class="card"><div class="k">Facturas</div><div class="v">${d.facturas}</div></div>
+      <div class="card"><div class="k">Movimientos</div><div class="v">${d.movimientos}</div>
+        <div class="mini ${d.sin_conciliar ? 'neg' : ''}">${d.sin_conciliar} sin conciliar</div></div>
+      <div class="card"><div class="k">Cheques</div><div class="v">${d.cheques}</div></div>
+      <div class="card"><div class="k">Entidades en el maestro</div><div class="v">${d.entidades}</div></div>
+      <div class="card"><div class="k">Base</div><div class="v sm">${p.base.mb} MB</div>
+        <div class="mini">${esc(p.base.ruta)}</div></div>
+    </div>
+
+    ${p.faltan.length ? `<div class="panel" style="margin-top:16px;border-left:3px solid var(--warn)">
+      <div class="panel-h"><b>Falta cargar — sin esto los jobs no pueden entrar solos</b></div>
+      ${tabla(['Qué falta','Fuente','Cliente','Cómo se carga'],
+        p.faltan.map(f => [esc(f.que), esc(f.fuente || '—'), esc(f.alias || '—'),
+          f.que === 'credencial'
+            ? `<code class="mini">py parsers/credenciales.py --set --fuente ${esc(f.fuente)} --alias ${esc(f.alias)}</code>`
+            : '<span class="mini">se pone en C:\SIBRA\estudio\</span>']))}
+    </div>` : ''}
+
     ${Object.entries(RUBROS_JOB).map(([r, titulo]) => {
       const del = js.filter(j => j.rubro === r);
       if (!del.length) return '';
       return `<div class="panel"><div class="panel-h"><b>${titulo}</b></div>
         <div class="panel-b">${del.map(j => tarjetaJob(j)).join('')}</div></div>`;
     }).join('')}
+
     <div class="panel"><div class="panel-h"><b>Últimas corridas</b>
-      <button class="g xs" onclick="vJobs()">Actualizar</button></div>
+      <button class="g xs" onclick="vPanel()">Actualizar</button></div>
       <div id="jb-corridas"><div class="vacio">—</div></div>
     </div>`);
   verCorridas();
@@ -1159,21 +1195,24 @@ async function seguir(cid){
   for (let i = 0; i < 600; i++){
     await new Promise(r => setTimeout(r, 2000));
     let c; try{ c = await api('/api/jobs/corrida/' + cid); }catch(e){ return; }
-    if (!c || c.estado === 'corriendo') { if (location.hash === '#jobs') verCorridas(); continue; }
+    if (!c || c.estado === 'corriendo') { if (location.hash === '#panel') verCorridas(); continue; }
     toast(c.estado === 'ok' ? 'El job terminó bien' : 'El job falló — mirá la salida', c.estado !== 'ok');
-    if (location.hash === '#jobs') { vJobs(); verSalida(cid); }
+    if (location.hash === '#panel') { vPanel(); verSalida(cid); }
     return;
   }
 }
 async function verCorridas(){
   const c = $('#jb-corridas'); if (!c) return;
   const cs = await api('/api/jobs/corridas').catch(() => []);
-  c.innerHTML = cs.length ? tabla(['Arrancó','Job','Argumentos','Estado',''],
-    cs.map(x => [esc(x.inicio.replace('T',' ')), esc(x.job),
-      `<span class="mini">${esc((x.args||[]).join(' ')) || '—'}</span>`,
+  c.innerHTML = cs.length ? tabla(['Arrancó','Job','Sobre','Duró','Quién','Estado',''],
+    cs.map(x => [esc((x.inicio||'').replace('T',' ')), esc(x.job),
+      `<span class="mini">${esc(x.alias || '—')}</span>`,
+      x.segundos == null ? '—' : (x.segundos < 60 ? x.segundos + 's'
+        : Math.round(x.segundos/60) + ' min'),
+      `<span class="mini">${esc(x.usuario || '—')}</span>`,
       x.estado === 'corriendo' ? '<span class="badge b-warn">corriendo</span>'
         : x.estado === 'ok' ? '<span class="badge b-ok">ok</span>' : '<span class="badge b-bad">falló</span>',
-      `<button class="g xs" onclick="verSalida('${x.id}')">Salida</button>`]))
+      `<button class="g xs" onclick="verSalida(${x.id})">Salida</button>`]))
     : '<div class="vacio">Todavía no se corrió ningún job.</div>';
 }
 async function verSalida(cid){

@@ -33,10 +33,15 @@ También está en `.claude/launch.json` como `erben-estudio`.
 
 ## Los módulos
 
-> **El filtro de empresa vive en la fila de arriba.** Se elige una y TODOS los
-> módulos filtran por ella; cambiarla refiltra el módulo en el que estás sin
-> sacarte de él. No es multiempresa como nuestro ERP: no existe la opción
-> "todas", todo lo que se hace es de una sola empresa.
+> **El filtro de empresa vive arriba, en el menú principal.** Se elige una y
+> TODOS los módulos filtran por ella; cambiarla refiltra el módulo en el que
+> estás sin sacarte de él.
+>
+> Es multiempresa en el sentido de que el estudio administra varias, **pero no
+> se mezclan nunca**: en nuestro ERP las empresas son del mismo dueño y se
+> consolidan, acá cada una es un cliente distinto y cruzarlas sería mostrarle a
+> uno los datos de otro. Por eso no existe la opción "todas", y el filtro se
+> aplica en el servidor.
 
 | Módulo | Qué hace |
 |---|---|
@@ -48,7 +53,15 @@ También está en `.claude/launch.json` como `erben-estudio`.
 | **Cheques** | solo dos clases: **cobrados** (entran únicamente por una cobranza; se depositan o endosan) y **emitidos**. No hay "me dieron" ni "me prestaron" |
 | **Pagos** | cancela facturas con movimientos de banco, cheques o efectivo |
 | **Entidades** | la relación de este cliente, sobre el maestro único por CUIT |
-| **Parsers y jobs** | la suite: traer info de bancos, ARCA y DGR — y **llevar la DJ liquidada al portal** para que la persona presente |
+| **Panel** | estado del equipo y los servicios, qué falta cargar, y la suite de jobs: traer info de bancos, ARCA y DGR, **llevar la DJ liquidada al portal**, y el registro de cada corrida |
+
+## Lo que NO tiene (y es a propósito)
+
+| No hay | Por qué |
+|---|---|
+| **módulo Obra** | sin OC, OT ni certificados, sin maestro de obras: el circuito **arranca en la factura**. Un estudio contable no certifica obras. Queda preparada la arquitectura de **centros de costo** (reparto por porcentaje) para clasificar por destino |
+| **cheques "me dieron" / "me prestaron"** | solo **emitidos** y **cobrados**. Las otras dos clases arrastran el circuito real↔fantasía del ERP, que acá no aplica |
+| **módulo Tarjetas** | todavía no |
 
 ## El flujo que ata todo
 
@@ -80,7 +93,9 @@ adivinar rompe la cuenta corriente en silencio.
 - [x] Suite de parsers propia (`parsers/`) + ícono de escritorio que arranca todo
 - [x] Job que lleva la DJ al portal de la provincia (`dj_a_dgr.py`) — no presenta
 - [ ] Cargador de Mis Comprobantes de ARCA → facturas
-- [ ] Cargar los vencimientos de ARCA desde los jobs de la suite
+- [x] **Panel** con estado de servicios y el registro de corridas en la base
+- [x] **Cargador de obligaciones impositivas** con el ciclo de vida del ERP
+- [x] Arquitectura de **centros de costo** (sin módulo, listo para cargar)
 - [x] **Cargador de extractos** (`parsers/cargar_extracto.py`) — CSV/XLSX de cualquier banco, valida la cadena de saldos, idempotente
 - [ ] Login del estudio y permisos por contador
 

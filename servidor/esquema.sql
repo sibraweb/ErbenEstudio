@@ -255,16 +255,36 @@ CREATE INDEX ix_conc_cliente ON conciliaciones(cliente_id);
 -- ══ 9. IMPUESTOS ════════════════════════════════════════════════════════════
 -- Vencimientos (ARCA y las provincias). Los cargan los jobs
 -- (vencimientos_arca.py, cct_vencimientos.py, atp_iibb.py) o la mano.
+-- ⚠ El estado NO es una etiqueta suelta: es un CICLO que avanza. Lo aprendió
+-- el ERP leyendo las tres pestañas del CCT de ARCA, que son exactamente los
+-- tres momentos de la misma obligación:
+--
+--     a_vencer                 la fecha todavía no pasó
+--        ↓ pasa la fecha sin presentar
+--     vencida_sin_presentar    sigue siendo una FECHA
+--        ↓ se presenta la DJ
+--     dj_a_pagar               ya no es fecha: es PLATA, con su importe
+--        ↓ se paga
+--     pagado
+--
+-- ⚠⚠ Las tres pestañas de ARCA SE SOLAPAN: la misma obligación aparece en dos
+-- a la vez. Al cargar gana el estado MÁS AVANZADO — una obligación está en un
+-- solo momento del ciclo, si no el mismo monotributo sale verde y rojo juntos.
 CREATE TABLE vencimientos (
     id         INTEGER PRIMARY KEY,
     cliente_id INTEGER NOT NULL REFERENCES clientes(id),
     fuente     TEXT NOT NULL,                  -- arca | DGR-Fsa | DGR-Ctes | ...
     impuesto   TEXT NOT NULL,                  -- IVA | IIBB | Ganancias | ...
+    -- El CÓDIGO es lo estable: el nombre que muestra el portal cambia de
+    -- redacción entre versiones, el código no. Por él se saben cuáles no
+    -- llevan DJ (monotributo y compañía: la deuda se genera sola).
+    codigo     TEXT,
     periodo    TEXT NOT NULL,                  -- MM/YYYY
     fecha      TEXT NOT NULL,
     importe    REAL,
-    estado     TEXT NOT NULL DEFAULT 'pendiente',  -- pendiente|presentado|pagado
+    estado     TEXT NOT NULL DEFAULT 'a_vencer',
     nota       TEXT,
+    actualizado TEXT,
     UNIQUE (cliente_id, fuente, impuesto, periodo)
 );
 CREATE INDEX ix_venc_cliente ON vencimientos(cliente_id, fecha);
@@ -291,3 +311,66 @@ CREATE TABLE djs (
     detalle       TEXT,                        -- JSON con el desglose
     UNIQUE (cliente_id, impuesto, jurisdiccion, periodo)
 );
+
+
+-- ══ 10. EL PANEL — registro de las corridas ═════════════════════════════════
+-- El ERP aprendió esto por las malas: los jobs se corrían con .bat que
+-- imprimían a consola, y al cerrar la ventana no quedaba registro de NADA.
+-- Sin historial no se puede contestar "¿esto se corrió?" ni "¿por qué falló?".
+--
+-- No lleva cliente_id: es infraestructura del estudio, no dato de un cliente.
+CREATE TABLE jobs_corridas (
+    id         INTEGER PRIMARY KEY,
+    job        TEXT NOT NULL,
+    args       TEXT,
+    alias      TEXT,                           -- sobre qué cliente corrió, si aplica
+    usuario    TEXT,
+    maquina    TEXT,
+    inicio     TEXT NOT NULL,
+    fin        TEXT,
+    segundos   REAL,
+    estado     TEXT NOT NULL,                  -- corriendo | ok | falló
+    exit_code  INTEGER,
+    salida     TEXT
+);
+CREATE INDEX ix_corridas_job ON jobs_corridas(job, inicio DESC);
+
+
+-- ══ 11. CENTROS DE COSTO — la arquitectura, sin módulo todavía ══════════════
+-- Juan (2026-08-26): *"no hay maestro de obras, pero vamos a dejar la
+-- arquitectura para cargar centros de costo"*.
+--
+-- ERBEN ESTUDIO **no tiene módulo Obra**: no existen OC, OT ni certificados, y
+-- el circuito arranca en la FACTURA. Lo que sí puede hacer falta es clasificar
+-- una factura por destino (una sucursal, un proyecto, una línea de negocio).
+-- Eso es un centro de costo, y no arrastra nada del mundo de obra.
+--
+-- ⚠ El reparto es POR PORCENTAJE desde el día uno, no un centro único por
+-- factura. En el ERP la lección fue justamente esa: una factura puede ser 50%
+-- de un centro y 50% de otro, y cuando se mira el flujo hay que repartir TODO
+-- —el banco, el efectivo, los vencimientos— con ese mismo porcentaje. Dejarlo
+-- como un solo FK obligaría a rehacer la tabla y a migrar lo ya cargado.
+--
+-- Mientras no haya módulo, estas tablas quedan vacías y no molestan: una
+-- factura sin reparto es una factura sin clasificar, que es lo normal hoy.
+CREATE TABLE centros_costo (
+    id         INTEGER PRIMARY KEY,
+    cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+    codigo     TEXT NOT NULL,
+    nombre     TEXT NOT NULL,
+    activo     INTEGER NOT NULL DEFAULT 1,
+    nota       TEXT,
+    UNIQUE (cliente_id, codigo)
+);
+CREATE INDEX ix_centros_cliente ON centros_costo(cliente_id);
+
+-- El reparto de una factura entre centros. Si una factura no tiene filas acá,
+-- está sin clasificar. Si tiene, los porcentajes deben sumar 100.
+CREATE TABLE factura_centros (
+    id         INTEGER PRIMARY KEY,
+    factura_id INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+    centro_id  INTEGER NOT NULL REFERENCES centros_costo(id),
+    porcentaje REAL NOT NULL,
+    UNIQUE (factura_id, centro_id)
+);
+CREATE INDEX ix_factcentro ON factura_centros(centro_id);
