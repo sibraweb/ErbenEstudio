@@ -35,12 +35,14 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import rutas  # noqa: E402
 import clientes  # noqa: E402
 
 API = "http://localhost:8310"
 BASE = "https://www.atpformosa.gob.ar/consultas"
-RUNTIME_DIR = Path(r"C:\SIBRA\estudio")
-SALIDA = Path(r"H:\My Drive\web_sibra\estudio\dj")
+RUNTIME_DIR = rutas.RUNTIME
+SALIDA = rutas.ESTADO / "djs"  # constancias; la del cliente va a su carpeta
 
 
 def storage_de(alias):

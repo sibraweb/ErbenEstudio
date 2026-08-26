@@ -32,11 +32,15 @@ from flask_cors import CORS
 
 RAIZ = Path(__file__).parent.parent
 SISTEMA = RAIZ / "sistema"
-DB_PATH = Path(os.environ.get("ESTUDIO_DB", r"C:\SIBRA\estudio\estudio.sqlite3"))
+sys.path.insert(0, str(RAIZ))
+import respaldo as _respaldo  # noqa: E402
+import rutas  # noqa: E402
+
+DB_PATH = rutas.DB_PATH
 ESQUEMA = Path(__file__).parent / "esquema.sql"
 # Lo que dejan los jobs de la suite (atp_iibb.py). El server lo LEE, no lo
 # escribe: los jobs son los dueños de ese archivo.
-ATP_ESTADO = Path(r"H:\My Drive\web_sibra\tesoreria\atp\atp_estado.json")
+ATP_ESTADO = rutas.ESTADO / "atp_estado.json"
 
 # Ventana de fechas para la conciliación automática. Un cheque se debita cerca
 # de su fecha de pago pero nunca clavado, y una transferencia puede impactar al
@@ -1970,6 +1974,12 @@ def api_factura_centros(fid):
     return jsonify({"ok": True, "centros": len(lote)})
 
 
+# ══ RESPALDO ═══════════════════════════════════════════════════════════════
+@app.post("/api/respaldo")
+def api_respaldo():
+    return jsonify(_respaldo.copiar(motivo="desde el panel"))
+
+
 # ══ EL PANEL — servidores, jobs y el registro de lo que se corrió ══════════
 # Trae la lección del panel del ERP: los jobs se corrían con .bat que imprimían
 # a consola, y al cerrar la ventana no quedaba registro de NADA. Sin historial
@@ -2042,13 +2052,15 @@ def api_panel():
         faltan = [dict(x) for x in {tuple(sorted(f.items())): f for f in faltan}.values()]
     except Exception:
         pass
-    drive = Path(r"C:\SIBRA\estudio\credentials.json")
+    drive = rutas.CREDENCIALES_GOOGLE
     if not drive.exists():
         faltan.append({"que": "credentials.json de Google", "fuente": "drive", "alias": None})
 
     return jsonify({
         "base": {"ruta": str(DB_PATH), "existe": DB_PATH.exists(),
                  "mb": round(DB_PATH.stat().st_size / 1048576, 2) if DB_PATH.exists() else 0},
+        "respaldo": _respaldo.estado(),
+        "drive": {"ruta": str(rutas.DRIVE), "montado": rutas.hay_drive()},
         "equipo": {"maquina": platform.node(), "usuario": getpass.getuser()},
         "datos": datos,
         "servicios": [{**s, "vivo": _puerto_vivo(s["puerto"])} for s in SERVICIOS],
@@ -2138,6 +2150,12 @@ if __name__ == "__main__":
     except Exception:
         pass
     crear_y_sembrar()
+    # Respaldo al arrancar: es el momento en que la base está quieta y nadie
+    # está escribiendo. Si falla, se avisa y se sigue — que no haya Drive no
+    # puede dejar al estudio sin poder trabajar.
+    _r = _respaldo.copiar(motivo="al arrancar")
+    print("  respaldo: " + (f"{Path(_r['archivo']).name} ({_r['mb']} MB)"
+                            if _r.get("ok") else "⚠ " + _r.get("error", "")))
     print("ERBEN ESTUDIO — http://localhost:8310")
     app.run(host="127.0.0.1", port=8310, debug=False)
 

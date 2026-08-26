@@ -14,11 +14,14 @@ para que un alias del estudio nunca pise uno nuestro en el Credential Manager
 (ARQUITECTURA.md §3). RODRIGUEZ del estudio y un RODRIGUEZ nuestro serían dos
 claves distintas aunque se llamen igual.
 """
-import os
 import sqlite3
+import sys
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("ESTUDIO_DB", r"C:\SIBRA\estudio\estudio.sqlite3"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import rutas  # noqa: E402
+
+DB_PATH = rutas.DB_PATH
 
 # Las fuentes que los jobs saben operar. La clave es la que usan
 # `credenciales.py` y las sesiones (`sesion_*.py`).

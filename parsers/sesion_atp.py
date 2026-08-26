@@ -33,9 +33,11 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import rutas  # noqa: E402
 from credenciales import obtener as obtener_credencial, pedir_y_guardar
 
-RUNTIME_DIR = Path(r"C:\SIBRA\estudio")
+RUNTIME_DIR = rutas.RUNTIME
 URL = "https://atpformosa.gob.ar/"
 TIMEOUT_LOGIN_MANUAL_MS = 10 * 60 * 1000
 # señal de sesión viva: el header logueado tiene el link de salir;

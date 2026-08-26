@@ -50,10 +50,12 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import rutas  # noqa: E402
 from clientes import de_fuente
 from sesion_atp import storage_de, SELECTOR_LOGUEADO
 
-SALIDA = Path(r"H:\My Drive\web_sibra\estudio\atp")
+SALIDA = rutas.ESTADO          # el atp_estado.json que consume el sistema
 BASE = "https://www.atpformosa.gob.ar/consultas"
 FUENTE = "DGR-Fsa"
 

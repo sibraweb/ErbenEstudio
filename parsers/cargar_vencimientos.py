@@ -42,11 +42,16 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import rutas  # noqa: E402
 import clientes  # noqa: E402
 
 API = "http://localhost:8310"
+# ⚠ Esta sigue apuntando al Drive NUESTRO porque la escribe un job heredado de
+# SIBRA (`cct_vencimientos.py`), que no sabe nada de ERBEN. Cuando ese job se
+# mude al estudio, pasa a ser `rutas.ESTADO`.
 ARCA_DIR = Path(r"H:\My Drive\web_sibra\tesoreria\arca")
-ATP_JSON = Path(r"H:\My Drive\web_sibra\estudio\atp\atp_estado.json")
+ATP_JSON = rutas.ESTADO / "atp_estado.json"
 
 # pestaña del CCT → momento del ciclo
 PESTANAS = {

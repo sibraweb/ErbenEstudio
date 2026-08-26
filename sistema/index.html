@@ -1130,6 +1130,22 @@ async function vPanel(){
         <div class="mini">${esc(p.base.ruta)}</div></div>
     </div>
 
+    <div class="panel" style="margin-top:16px${p.respaldo.avisar ? ';border-left:3px solid var(--bad)' : ''}">
+      <div class="panel-h"><b>Respaldo de la base</b>
+        <button class="${p.respaldo.avisar ? '' : 'g'} xs" onclick="respaldar(this)">Respaldar ahora</button></div>
+      <div class="panel-b">
+        <div class="${p.respaldo.avisar ? 'neg' : 'pos'}"><b>${esc(p.respaldo.mensaje)}</b></div>
+        <div class="mini" style="margin-top:5px">
+          ${p.respaldo.hay ? `${p.respaldo.copias} copia(s) guardadas · última de ${p.respaldo.mb} MB<br>` : ''}
+          Carpeta: <code>${esc(p.respaldo.carpeta || (p.drive.ruta + '\respaldo'))}</code>
+          ${p.drive.montado ? '' : ' <span class="badge b-bad">el Drive no está montado</span>'}
+        </div>
+        <div class="mini" style="margin-top:7px">Se respalda solo al arrancar el sistema.
+          La base <b>no</b> vive en el Drive —un SQLite adentro de una carpeta que sincroniza
+          se corrompe—: solo suben las copias.</div>
+      </div>
+    </div>
+
     ${p.faltan.length ? `<div class="panel" style="margin-top:16px;border-left:3px solid var(--warn)">
       <div class="panel-h"><b>Falta cargar — sin esto los jobs no pueden entrar solos</b></div>
       ${tabla(['Qué falta','Fuente','Cliente','Cómo se carga'],
@@ -1226,6 +1242,15 @@ async function verSalida(cid){
       <pre style="background:var(--bg);border:1px solid var(--bor);border-radius:7px;padding:11px;
         overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap">${esc(c.salida || '(sin salida)')}</pre>
     </div>`);
+}
+
+async function respaldar(btn){
+  btn.disabled = true; btn.textContent = 'Respaldando…';
+  try{
+    const r = await post('/api/respaldo', {});
+    toast(r.ok ? `Copia hecha (${r.mb} MB) — ${r.detalle}` : r.error, !r.ok);
+  }catch(e){ toast(e.message, true); }
+  vPanel();
 }
 
 /* ══ CLIENTES DEL ESTUDIO ══ */

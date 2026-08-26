@@ -108,8 +108,27 @@ del estudio. Ver `DESPLIEGUE.md`.
 | Capa | Qué tiene |
 |---|---|
 | Vercel | solo `sistema/` — HTML y JS, cero datos |
-| El equipo del estudio | server + API + base + credenciales + parsers |
-| Drive del cliente | archivo y respaldo: extractos, comprobantes, constancias |
+| El equipo del estudio | server + API + **la base** + credenciales + parsers |
+| Drive (`H:\My Drive\ERBEN`) | **respaldos** de la base, estado de los jobs y la carpeta de cada cliente |
+
+⚠ **La base NO vive en el Drive**: un SQLite adentro de una carpeta que
+sincroniza se corrompe (Drive puede agarrarlo a mitad de una escritura). Al
+Drive suben solo las COPIAS, con fecha, y se guardan las últimas 10.
+
+Todo lo del Drive cuelga de **una sola constante** (`rutas.py`, pisable con
+`ERBEN_DRIVE`): hoy usa nuestro Drive y el día que ERBEN tenga cuenta propia se
+mueve la carpeta y se cambia una línea.
+
+## Base de datos
+
+**SQLite**, y alcanza de sobra. Medido con un cliente activo (200 facturas y
+300 movimientos por mes): 50 clientes × 10 años pesan **~600 MB**, y SQLite
+trabaja cómodo hasta cientos de GB.
+
+Cambiaría solo por dos motivos, ninguno presente hoy: que **varias máquinas
+escriban a la vez** (SQLite sobre red se corrompe) o que el sistema **se vaya a
+la nube**. En los dos casos la migración ya está medida — 109 llamadas con un
+solo `db()`, y el ERP hizo el mismo salto con `pgcompat.py`.
 
 ## Qué se hereda de nuestro sistema
 
