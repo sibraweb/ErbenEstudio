@@ -204,9 +204,18 @@ def _migrar(con):
 
 
 def crear_y_sembrar():
-    """Crea la base si no existe y la siembra con los datos REALES del
-    relevamiento de ATP (2026-08-17). Nada inventado: todo salió de las
-    pantallas del portal."""
+    """Crea la base si no existe y, si hay semilla, la carga.
+
+    ⚠ El código sabe CÓMO sembrar, no A QUIÉN. Los datos del alta inicial
+    —CUIT, actividades, agentes— viven en `semilla.json` en el Drive del
+    estudio, NO en el repo (Juan, 2026-08-27: *"esos datos van en la base de
+    datos, el repo solo es para ver las cosas y operar"*).
+
+    Antes esto estaba hardcodeado acá: el perfil fiscal de un contribuyente
+    real adentro del código. En un repo público eso se publica.
+
+    Sin semilla la base arranca vacía y los clientes se dan de alta por
+    pantalla, que es el camino normal."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = db()
     if con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='clientes'").fetchone():
@@ -214,62 +223,53 @@ def crear_y_sembrar():
         con.close()
         return
     con.executescript(ESQUEMA.read_text(encoding="utf-8"))
-
-    con.execute(
-        "INSERT INTO maestro_entidades (cuit, razon_social, tipo_persona, condicion_iva, provincia, origen, actualizado) "
-        "VALUES (?,?,?,?,?,?,?)",
-        ("20216598998", "RODRIGUEZ RUBEN ALFREDO", "fisica", "RI", "Formosa", "atp", _hoy()))
-
-    # Sus agentes de retención/percepción reales (consul_ret_per.php 07/2026)
-    for cuit, rs in [
-        ("30646382943", "PUJOL E HIJOS S.R.L."),
-        ("30671378047", "AGUAS DE FORMOSA S.A."),
-        ("30709668753", "RECURSOS Y ENERGIA FORMOSA S.A."),
-        ("30500003193", "BBVA BANCO FRANCES S.A."),
-        ("30671375900", "BANCO DE FORMOSA S.A."),
-        ("30715899716", "BRUBANK S.A.U"),
-        ("30703088534", "MERCADOLIBRE S.R.L."),
-    ]:
-        con.execute(
-            "INSERT INTO maestro_entidades (cuit, razon_social, tipo_persona, origen, actualizado) "
-            "VALUES (?,?,'juridica','atp',?)", (cuit, rs, _hoy()))
-
-    # El padrón DGR-Fsa: los 13 pares actividad+alícuota de la grilla de ATP,
-    # con las fechas de inicio de datos.php?caseid=actividades.
-    for cod, nombre, alic, ppal, inicio in [
-        ("476200", "Venta al por menor de CDs y DVDs de audio y video grabados", 3.0, 1, "2003-05-01"),
-        ("561019", "Servicios de expendio de comidas y bebidas con servicio de mesa", 3.0, 0, "2014-09-01"),
-        ("562010", "Servicios de preparación de comidas para empresas y eventos", 3.0, 0, "2013-08-01"),
-        ("562010", "Servicios de preparación de comidas para empresas y eventos", 5.0, 0, "2013-08-01"),
-        ("562010", "Servicios de preparación de comidas para empresas y eventos", 15.0, 0, "2013-08-01"),
-        ("601000", "Emisión y retransmisión de radio", 4.0, 0, "2021-10-07"),
-        ("681010", "Servicios de alquiler y explotación de inmuebles para fiestas", 5.0, 0, "2016-09-01"),
-        ("731009", "Servicios de publicidad n.c.p.", 3.0, 0, "2011-04-01"),
-        ("731009", "Servicios de publicidad n.c.p.", 4.1, 0, "2011-04-01"),
-        ("900030", "Servicios conexos a la producción de espectáculos teatrales y musicales", 3.0, 0, "2011-04-01"),
-        ("939030", "Servicios de salones de baile, discotecas y similares", 15.0, 0, "2019-09-01"),
-        ("939090", "Servicios de entretenimiento n.c.p.", 3.0, 0, "2014-09-01"),
-        ("960990", "Servicios personales n.c.p.", 3.0, 0, "2022-02-01"),
-    ]:
-        con.execute(
-            "INSERT INTO maestro_actividades (cuit, jurisdiccion, codigo, nombre, alicuota, principal, exento, inicio) "
-            "VALUES (?,'DGR-Fsa',?,?,?,?,0,?)", ("20216598998", cod, nombre, alic, ppal, inicio))
-
-    con.execute("INSERT INTO clientes (cuit, alias, activo, alta, nota) VALUES (?,?,1,?,?)",
-                ("20216598998", "RODRIGUEZ", _hoy(),
-                 "Primer cliente del estudio — ATP relevada en vivo 2026-08-17"))
-    cid = con.execute("SELECT id FROM clientes WHERE alias='RODRIGUEZ'").fetchone()["id"]
-    con.execute(
-        "INSERT INTO cliente_jurisdicciones (cliente_id, jurisdiccion, nro_inscripcion, regimen, alta) "
-        "VALUES (?,?,?,?,?)", (cid, "DGR-Fsa", "465658", "local", "2011-04-01"))
-
-    for cuit in ("30646382943", "30671378047", "30709668753"):
-        con.execute(
-            "INSERT INTO entidades_cliente (cliente_id, cuit, es_proveedor, es_cliente, alta) "
-            "VALUES (?,?,1,0,?)", (cid, cuit, _hoy()))
     con.commit()
+
+    if not rutas.SEMILLA.exists():
+        con.close()
+        print(f"  base nueva y vacía — no hay semilla en {rutas.SEMILLA}")
+        return
+    try:
+        s = json.loads(rutas.SEMILLA.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        con.close()
+        print(f"  ⚠ no pude leer la semilla ({e}) — la base queda vacía")
+        return
+
+    hoy = _hoy()
+    for m in s.get("maestro", []):
+        con.execute(
+            "INSERT OR IGNORE INTO maestro_entidades (cuit, razon_social, tipo_persona, "
+            " condicion_iva, provincia, origen, actualizado) VALUES (?,?,?,?,?,?,?)",
+            (m["cuit"], m["razon_social"], m.get("tipo_persona"), m.get("condicion_iva"),
+             m.get("provincia"), m.get("origen") or "manual", hoy))
+    for a in s.get("actividades", []):
+        con.execute(
+            "INSERT OR IGNORE INTO maestro_actividades (cuit, jurisdiccion, codigo, nombre, "
+            " alicuota, principal, exento, inicio) VALUES (?,?,?,?,?,?,?,?)",
+            (a["cuit"], a["jurisdiccion"], a["codigo"], a.get("nombre"), a.get("alicuota"),
+             a.get("principal", 0), a.get("exento", 0), a.get("inicio")))
+    for c in s.get("clientes", []):
+        con.execute("INSERT OR IGNORE INTO clientes (cuit, alias, activo, alta, nota) "
+                    "VALUES (?,?,1,?,?)", (c["cuit"], c["alias"], hoy, c.get("nota")))
+        fila = con.execute("SELECT id FROM clientes WHERE alias=?", (c["alias"],)).fetchone()
+        if not fila:
+            continue
+        cid = fila["id"]
+        for j in c.get("jurisdicciones", []):
+            con.execute(
+                "INSERT OR IGNORE INTO cliente_jurisdicciones (cliente_id, jurisdiccion, "
+                " nro_inscripcion, regimen, alta) VALUES (?,?,?,?,?)",
+                (cid, j["jurisdiccion"], j.get("nro_inscripcion"), j.get("regimen"), j.get("alta")))
+        for e in c.get("entidades", []):
+            con.execute(
+                "INSERT OR IGNORE INTO entidades_cliente (cliente_id, cuit, es_proveedor, "
+                " es_cliente, alta) VALUES (?,?,?,?,?)",
+                (cid, e["cuit"], e.get("es_proveedor", 0), e.get("es_cliente", 0), hoy))
+    con.commit()
+    n = con.execute("SELECT COUNT(*) FROM clientes").fetchone()[0]
     con.close()
-    print(f"Base nueva creada y sembrada en {DB_PATH}")
+    print(f"  base nueva · semilla cargada: {n} cliente(s)")
 
 
 # ══ el candado ══════════════════════════════════════════════════════════════

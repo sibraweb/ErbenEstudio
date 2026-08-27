@@ -13,8 +13,8 @@ Desde la consola, si hace falta:
 ```
 py parsers/suite.py                                  el catálogo
 py parsers/suite.py --credenciales                   qué falta cargar
-py parsers/credenciales.py --set --fuente DGR-Fsa --alias RODRIGUEZ
-py parsers/dj_a_dgr.py --alias RODRIGUEZ --periodo 07/2026
+py parsers/credenciales.py --set --fuente DGR-Fsa --alias DEMO
+py parsers/dj_a_dgr.py --alias DEMO --periodo 07/2026
 ```
 
 ## Las tres piezas de infraestructura
@@ -48,8 +48,8 @@ Toma la DJ de IIBB ya liquidada acá y **la escribe en la grilla del portal**
 para que la persona solo revise y presente.
 
 ```
-py parsers/dj_a_dgr.py --alias RODRIGUEZ --periodo 07/2026
-py parsers/dj_a_dgr.py --alias RODRIGUEZ --periodo 07/2026 --revisar   # compara sin escribir
+py parsers/dj_a_dgr.py --alias DEMO --periodo 07/2026
+py parsers/dj_a_dgr.py --alias DEMO --periodo 07/2026 --revisar   # compara sin escribir
 ```
 
 Antes de escribir nada verifica tres cosas, y si alguna falla no toca el portal:

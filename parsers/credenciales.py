@@ -7,15 +7,15 @@ servicio **`erben-estudio`** en vez de `sibra-tesoreria`.
 
 Por qué el namespace aparte (ARQUITECTURA.md §3): un alias del estudio y uno
 nuestro pueden llamarse igual. Si compartieran namespace, cargar la clave de
-"RODRIGUEZ" del estudio pisaría la de un "RODRIGUEZ" nuestro — y el síntoma
+"DEMO" del estudio pisaría la de un "DEMO" nuestro — y el síntoma
 sería un job fallando con "usuario o contraseña incorrectos", que se lee como
 un bug del scraper y no como lo que es.
 
 Uso:
     from credenciales import obtener, guardar
-    cred = obtener("DGR-Fsa", "RODRIGUEZ")   # {"usuario","clave","guardada"} o None
+    cred = obtener("DGR-Fsa", "DEMO")   # {"usuario","clave","guardada"} o None
 
-    py credenciales.py --set --fuente DGR-Fsa --alias RODRIGUEZ
+    py credenciales.py --set --fuente DGR-Fsa --alias DEMO
     py credenciales.py --status
 """
 import argparse

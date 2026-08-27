@@ -22,9 +22,9 @@ Tres cosas que hace y que valen más que el import en sí
    el saldo). Volver a cargar el mismo mes no duplica; un mes nuevo entra.
 
 Uso:
-    py cargar_extracto.py --alias RODRIGUEZ --cuenta 1 --archivo "C:\\...\\Galicia_2026-08.csv"
-    py cargar_extracto.py --alias RODRIGUEZ --cuenta 1 --archivo x.csv --revisar   # no carga
-    py cargar_extracto.py --alias RODRIGUEZ --listar-cuentas
+    py cargar_extracto.py --alias DEMO --cuenta 1 --archivo "C:\\...\\Galicia_2026-08.csv"
+    py cargar_extracto.py --alias DEMO --cuenta 1 --archivo x.csv --revisar   # no carga
+    py cargar_extracto.py --alias DEMO --listar-cuentas
 """
 import argparse
 import csv

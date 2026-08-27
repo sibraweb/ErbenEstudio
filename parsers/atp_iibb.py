@@ -33,7 +33,7 @@ R.G. 05/2026 actúa de piso duro.
 
 Uso:
     py atp_iibb.py                     # todos los contribuyentes DGR-Fsa
-    py atp_iibb.py --alias RODRIGUEZ   # uno solo
+    py atp_iibb.py --alias DEMO   # uno solo
 Salida: H:\\My Drive\\web_sibra\\tesoreria\\atp\\<alias>\\ATP_<fecha>.xlsx (+ .txt + .png)
         H:\\My Drive\\web_sibra\\tesoreria\\atp\\atp_estado.json (todos los alias)
 Códigos: 0 ok (al menos uno) · 1 ninguna sesión viva · 2 error

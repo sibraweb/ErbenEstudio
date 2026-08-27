@@ -27,7 +27,7 @@ py estudio-contable/arrancar.py      →  http://localhost:8310
 ```
 
 La primera corrida crea `C:\SIBRA\estudio\estudio.sqlite3` y la siembra con lo
-relevado en vivo de ATP Formosa el 2026-08-17 (RODRIGUEZ: ficha, las 13 filas
+relevado en vivo de ATP Formosa el 2026-08-17 (DEMO: ficha, las 13 filas
 de su padrón actividad+alícuota, y sus agentes de retención como maestro).
 También está en `.claude/launch.json` como `erben-estudio`.
 
@@ -139,7 +139,7 @@ solo `db()`, y el ERP hizo el mismo salto con `pgcompat.py`.
 
 ## Primer cliente real
 
-RODRIGUEZ RUBEN ALFREDO (20216598998) — ATP Formosa relevada en vivo el
+EJEMPLO SRL (30123456789) — ATP Formosa relevada en vivo el
 2026-08-17, jobs `sesion_atp.py` + `atp_iibb.py` ya escritos (hoy viven en
 `Vinculacion bancos/tools/`).
 Relevo del portal: `H:\My Drive\web_sibra\tesoreria\atp_formosa\2026-08-17\`.

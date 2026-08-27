@@ -36,9 +36,26 @@ from pathlib import Path
 # que cambia (o se setea ERBEN_DRIVE y ni eso).
 DRIVE = Path(os.environ.get("ERBEN_DRIVE", r"H:\My Drive\ERBEN"))
 
+# La carpeta en Drive (web): https://drive.google.com/drive/folders/<ID>
+# Se anota para cuando el job hable con la API de Google; hoy se usa el disco.
+DRIVE_ID = "11mAJsY5oZcRgZLrYnDJX3WmckVHwb7NP"
+
 RESPALDO = DRIVE / "respaldo"
 ESTADO = DRIVE / "estado"          # los .json que dejan los jobs
 CLIENTES = DRIVE / "clientes"
+
+# ⚠ LOS DATOS NO VAN EN EL CÓDIGO (Juan, 2026-08-27: *"esos datos van en la base
+# de datos, el repo solo es para ver las cosas y operar"*).
+#
+# Hasta hoy el alta del primer cliente estaba HARDCODEADA en `server.py`: el
+# CUIT de una persona real, sus actividades y sus agentes de retención vivían
+# adentro del repo. Un repo público habría publicado el perfil fiscal de un
+# contribuyente.
+#
+# Ahora eso es DATO: vive acá, en el Drive del estudio. Si el archivo no está,
+# la base arranca vacía y los clientes se dan de alta por pantalla — que es
+# como tiene que ser.
+SEMILLA = DRIVE / "semilla.json"
 
 # ── lo que NO va al Drive ────────────────────────────────────────────────────
 RUNTIME = Path(os.environ.get("ERBEN_RUNTIME", r"C:\SIBRA\estudio"))
@@ -95,4 +112,4 @@ if __name__ == "__main__":
           f"{'✓' if DB_PATH.exists() else '✗ todavía no existe'}")
     print(f"  Google:   {CREDENCIALES_GOOGLE}   "
           f"{'✓' if CREDENCIALES_GOOGLE.exists() else '✗ falta'}")
-    print(f"\n  Ejemplo:  {carpeta_cliente('20216598998', 'RODRIGUEZ RUBEN ALFREDO', 'djs')}\n")
+    print(f"\n  Ejemplo:  {carpeta_cliente('30123456789', 'EJEMPLO SRL', 'djs')}\n")

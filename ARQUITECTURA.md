@@ -152,3 +152,53 @@ se mezclan nunca**. En nuestro ERP las empresas son del mismo dueño y se
 consolidan; acá cada una es un cliente distinto del estudio y cruzarlas sería
 mostrarle a uno los datos de otro. Por eso no existe la opción "todas" — y el
 filtro se aplica en el servidor, no en la pantalla.
+
+
+## 7. SERVIDOR Y PARSERS PROPIOS — dónde estamos (Juan, 2026-08-27)
+
+> *"Erben estudio debe tener su propio server separado de lo nuestro y sus
+> propios parsers después"*.
+
+### Ya está separado, y se puede verificar
+
+| | |
+|---|---|
+| Servidor | propio, puerto **8310**. No comparte proceso ni una línea de código con el ERP |
+| Base | propia, `C:\SIBRA\estudio\estudio.sqlite3` |
+| Credenciales | namespace propio **`erben-estudio`** en el Credential Manager — un alias del estudio no pisa uno nuestro aunque se llamen igual |
+| Drive | propio, `H:\My Drive\ERBEN` (una sola constante en `rutas.py`) |
+| Registro de clientes | propio: `parsers/clientes.py` lee de SU base, no del `contribuyentes.py` nuestro |
+
+Apagar todo nuestro sistema no afecta a ERBEN. Lo único que pierde son los 6
+jobs prestados de abajo, y el Panel los muestra como *falta el archivo* en vez
+de romperse.
+
+### Lo único que falta para la independencia total: 6 parsers
+
+**Propios (5)** — tocan la base del estudio:
+`atp_sesion` · `atp_relevar` · `dj_a_dgr` · `cargar_extracto` · `cargar_vencimientos`
+
+**Prestados de SIBRA (6)** — se invocan desde `Vinculacion bancos/tools/` vía la
+constante `TOOLS_SIBRA` (pisable con la variable de entorno `SIBRA_TOOLS`):
+
+| Job | Qué hay que escribir |
+|---|---|
+| `arca_comprobantes` | Mis Comprobantes por clave fiscal del cliente |
+| `arca_vencimientos` | agenda pública por terminación de CUIT |
+| `dgr_ctes_deuda` | estado de cuenta de IIBB Corrientes |
+| `galicia` · `bancorrientes` · `formosa_banco` | extractos y cheques de cada banco |
+
+**Por qué no se copiaron ya**: están probados contra los portales reales y
+copiarlos sería mantener dos veces el mismo scraper — cada cambio de pantalla
+de un banco habría que arreglarlo en dos lugares. Se reescriben **cuando el
+estudio corra en otra máquina**, que es cuando la dependencia se vuelve real.
+
+**El día que toque, es un trabajo acotado y ya está preparado**: los 6 salen de
+una sola constante, el catálogo ya los marca `heredado de SIBRA`, y el Panel ya
+avisa si no los encuentra. No hay que rediseñar nada, hay que escribir seis
+scrapers.
+
+⚠ La otra atadura, más chica: `cargar_vencimientos.py` lee el `cct_estado.json`
+que deja el job de ARCA **en nuestro Drive**. Busca primero en el Drive del
+estudio y usa el nuestro como respaldo, así el día que exista el job propio
+deja de mirar para afuera sin tocar código.

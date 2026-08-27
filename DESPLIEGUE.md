@@ -44,8 +44,27 @@ efecto lateral: es la razón de que la API sea local y no serverless.
 | sesiones (`atp_storage_*.json`) | son sesiones abiertas de portales fiscales |
 | `servidor/` y `parsers/` | corren local; publicarlos no aporta y agranda la superficie |
 
-⚠ El repo **tiene que ser privado**. Aunque no haya secretos adentro, el código
-dice cómo opera el estudio con los portales fiscales de sus clientes.
+### El repo NO tiene datos, y eso es por diseño
+
+> Juan (2026-08-27): *"esos datos van en la base de datos, el repo solo es para
+> ver las cosas y operar"*.
+
+El alta inicial del estudio (CUIT, actividades, agentes) **vivía hardcodeada en
+`server.py`** hasta el 27/08. Ahora es DATO: está en `semilla.json`, en el Drive
+del estudio, y el código solo sabe *cómo* sembrar, no *a quién*. Sin ese
+archivo la base arranca vacía y los clientes se cargan por pantalla.
+
+Verificado con un barrido sobre todo lo que va al repo: **ni un CUIT ni un
+nombre de contribuyente real**. Los ejemplos usan `DEMO` y `30123456789`.
+
+⚠ Aun así el repo **debería ser privado**: el código dice cómo opera el estudio
+con los portales fiscales de sus clientes, y las 712 líneas de lógica son el
+producto.
+
+⚠⚠ **Si el repo estuvo público en algún momento, cambiarlo a privado NO borra
+lo que ya se publicó**: GitHub conserva los commits en la caché de forks y los
+buscadores pueden haberlo indexado. Por eso el barrido se hizo ANTES del primer
+push, no después.
 
 ## Cómo la pantalla encuentra el equipo local
 

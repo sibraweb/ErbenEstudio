@@ -28,9 +28,9 @@ condominios de propietarios…). Solo sirve para ponerle la fecha oficial a los
 impuestos que el contribuyente YA tiene en su cuenta.
 
 Uso:
-    py cargar_vencimientos.py --alias RODRIGUEZ
-    py cargar_vencimientos.py --alias RODRIGUEZ --revisar
-    py cargar_vencimientos.py --alias RODRIGUEZ --archivo otro_cct.json
+    py cargar_vencimientos.py --alias DEMO
+    py cargar_vencimientos.py --alias DEMO --revisar
+    py cargar_vencimientos.py --alias DEMO --archivo otro_cct.json
 """
 import argparse
 import json
@@ -47,11 +47,26 @@ import rutas  # noqa: E402
 import clientes  # noqa: E402
 
 API = "http://localhost:8310"
-# ⚠ Esta sigue apuntando al Drive NUESTRO porque la escribe un job heredado de
-# SIBRA (`cct_vencimientos.py`), que no sabe nada de ERBEN. Cuando ese job se
-# mude al estudio, pasa a ser `rutas.ESTADO`.
-ARCA_DIR = Path(r"H:\My Drive\web_sibra\tesoreria\arca")
 ATP_JSON = rutas.ESTADO / "atp_estado.json"
+
+# El `cct_estado.json` de ARCA lo escribe todavía un job HEREDADO de SIBRA, que
+# no sabe nada de ERBEN y lo deja en el Drive nuestro. Por eso se busca en dos
+# lados y en este orden:
+#
+#   1. el Drive DEL ESTUDIO — donde lo va a dejar el job propio cuando exista
+#   2. el Drive nuestro     — el respaldo de hoy
+#
+# Así, el día que se escriba el job propio de ARCA, este cargador deja de mirar
+# para afuera sin que haya que tocar una línea (ARQUITECTURA.md §7).
+ARCA_ORDEN = [
+    rutas.ESTADO / "cct_estado.json",
+    Path(r"H:\My Drive\web_sibra\tesoreria\arca") / "cct_estado.json",
+]
+
+
+def archivo_arca():
+    """El primero de la lista que exista, o None."""
+    return next((p for p in ARCA_ORDEN if p.exists()), None)
 
 # pestaña del CCT → momento del ciclo
 PESTANAS = {
@@ -215,7 +230,7 @@ def main():
 
     obligaciones, leidas, fuentes = [], 0, []
     archivos = ([Path(a.archivo)] if a.archivo
-                else [ARCA_DIR / "cct_estado.json", ATP_JSON])
+                else [p for p in (archivo_arca(), ATP_JSON) if p])
     for arch in archivos:
         if not arch.exists():
             print(f"  (no está {arch.name} — lo saltea)")

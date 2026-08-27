@@ -11,7 +11,7 @@ mundo de los jobs y no del ERP: qué portales opera cada cliente.
 
 ⚠ NAMESPACE PROPIO. Las credenciales del estudio se guardan bajo `EST/<fuente>`
 para que un alias del estudio nunca pise uno nuestro en el Credential Manager
-(ARQUITECTURA.md §3). RODRIGUEZ del estudio y un RODRIGUEZ nuestro serían dos
+(ARQUITECTURA.md §3). DEMO del estudio y un DEMO nuestro serían dos
 claves distintas aunque se llamen igual.
 """
 import sqlite3

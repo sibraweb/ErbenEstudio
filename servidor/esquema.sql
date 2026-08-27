@@ -52,7 +52,7 @@ CREATE TABLE maestro_actividades (
 CREATE TABLE clientes (
     id       INTEGER PRIMARY KEY,
     cuit     TEXT NOT NULL UNIQUE REFERENCES maestro_entidades(cuit),
-    alias    TEXT NOT NULL UNIQUE,             -- RODRIGUEZ, ... (jobs y UI)
+    alias    TEXT NOT NULL UNIQUE,             -- DEMO, ... (jobs y UI)
     activo   INTEGER NOT NULL DEFAULT 1,
     alta     TEXT NOT NULL,
     nota     TEXT

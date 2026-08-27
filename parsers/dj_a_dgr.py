@@ -22,8 +22,8 @@ la persona, mirando la pantalla. El job prepara, el humano ejecuta — la misma
 regla del preparador de pagos (TESORERIA__DEFINICION.md §11).
 
 Uso:
-    py dj_a_dgr.py --alias RODRIGUEZ --periodo 07/2026
-    py dj_a_dgr.py --alias RODRIGUEZ --periodo 07/2026 --revisar   # no escribe, solo compara
+    py dj_a_dgr.py --alias DEMO --periodo 07/2026
+    py dj_a_dgr.py --alias DEMO --periodo 07/2026 --revisar   # no escribe, solo compara
 """
 import argparse
 import json

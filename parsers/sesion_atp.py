@@ -20,10 +20,10 @@ de login no lo tiene (verificado en el relevamiento 2026-08-17, ver
 H:\\My Drive\\web_sibra\\tesoreria\\atp_formosa\\2026-08-17\\).
 
 Uso:
-    py sesion_atp.py --alias RODRIGUEZ            # verifica; si vencida, abre login manual
-    py sesion_atp.py --alias RODRIGUEZ --login    # fuerza login manual
-    py sesion_atp.py --alias RODRIGUEZ --check    # solo verifica (headless, scheduler)
-    py sesion_atp.py --alias RODRIGUEZ --abrir    # reabre la sesión, ventana visible, para trabajar a mano
+    py sesion_atp.py --alias DEMO            # verifica; si vencida, abre login manual
+    py sesion_atp.py --alias DEMO --login    # fuerza login manual
+    py sesion_atp.py --alias DEMO --check    # solo verifica (headless, scheduler)
+    py sesion_atp.py --alias DEMO --abrir    # reabre la sesión, ventana visible, para trabajar a mano
 """
 import argparse
 import sys
@@ -157,7 +157,7 @@ def main():
     except Exception:
         pass
     ap = argparse.ArgumentParser(description="Sesión persistente ATP Formosa (DGR-Fsa)")
-    ap.add_argument("--alias", default="RODRIGUEZ", help="cliente del estudio (ver parsers/clientes.py)")
+    ap.add_argument("--alias", default="DEMO", help="cliente del estudio (ver parsers/clientes.py)")
     ap.add_argument("--login", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--abrir", action="store_true", help="reabrir la sesión ya guardada, ventana visible")
