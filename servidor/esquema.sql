@@ -18,7 +18,8 @@
 
 -- ══ 1. MAESTRO transversal — datos PÚBLICOS por CUIT ════════════════════════
 -- Lo que dice la constancia de inscripción: identidad, no operatoria.
--- La identidad va SIEMPRE por CUIT (precedente EPHISET/EPISHET).
+-- La identidad va SIEMPRE por CUIT: ya nos pasó duplicar una empresa por
+-- una letra de diferencia en el nombre. El nombre es solo para leer.
 CREATE TABLE maestro_entidades (
     cuit            TEXT PRIMARY KEY,          -- 11 dígitos, sin guiones
     razon_social    TEXT NOT NULL,

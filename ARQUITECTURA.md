@@ -43,7 +43,8 @@ inscripción de ARCA: **dato público**, no dice nada de con quién opera.
 Por qué transversal: en una misma plaza los mismos CUIT aparecen para todos
 (Aguas de Formosa, REFSA, los bancos, los mismos mayoristas). Cargar y
 mantener 30 veces la misma ficha es el error de tipeo asegurado — y ya
-tenemos el precedente EPHISET/EPISHET: la identidad va SIEMPRE por CUIT.
+tenemos el precedente de una empresa cargada dos veces por una letra de
+diferencia en el nombre: la identidad va SIEMPRE por CUIT.
 
 ### 2b. `entidades_cliente` — POR CLIENTE (la relación comercial)
 
