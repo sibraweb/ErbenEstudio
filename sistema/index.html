@@ -950,13 +950,23 @@ async function vCheques(){
     <h2>Cheques</h2>
     <div class="sub">Solo dos clases: los <b>cobrados</b> —que entran por una cobranza y se pueden depositar
       o endosar— y los <b>emitidos</b> por la empresa. No hay "me dieron" ni "me prestaron".</div>
+    <div class="aviso">Un cheque cobrado tiene <b>tres roles</b>, y son distintos:
+      el <b>librador</b> lo firmó · el <b>cliente</b> nos lo dio en la cobranza y es el que
+      cancela factura · y termina en un <b>proveedor</b> (endosado) o en un <b>banco</b> (depositado).
+      Si no se sabe quién libró, queda vacío: no se completa con el cliente.</div>
     <div class="panel"><div class="panel-h"><b>Cobrados (recibidos) — ${rec.length}</b>
       <span class="mini">en cartera: ${plata(rec.filter(c=>c.estado==='en_cartera').reduce((s,c)=>s+c.importe,0))}</span></div>
-      ${rec.length ? tabla(['Número','Banco','De quién','Vence','Importe','Estado','Recibo','Acciones'],
-        rec.map(c => [esc(c.numero), esc(c.banco||'—'), esc(c.librador||c.cuit_librador||'—'),
+      ${rec.length ? tabla(['Número','Banco','Librador','Cliente que lo dio','Destino','Vence','Importe','Estado','Acciones'],
+        rec.map(c => [esc(c.numero), esc(c.banco||'—'),
+          c.librador || c.cuit_librador
+            ? esc(c.librador || c.cuit_librador)
+            : '<span class="mini">sin dato</span>',
+          `${esc(c.cliente||'—')}${c.recibo_origen ? `<div class="cadena">↳ <i>${esc(c.recibo_origen)}</i></div>` : ''}`,
+          c.depositado_en ? `<span class="mini">banco · ${esc(c.depositado_en)}</span>`
+            : c.endosado_a ? `<span class="mini">proveedor · ${esc(c.endosado_a)}</span>`
+            : '<span class="mini">—</span>',
           `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
           {n:plata(c.importe)}, badgeEstado(c.estado),
-          `<span class="mini">${esc(c.recibo_origen||'—')}</span>`,
           c.estado === 'en_cartera' ? `<div class="row-act">
             <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
             <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']))

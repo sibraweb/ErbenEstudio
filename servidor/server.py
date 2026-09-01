@@ -714,9 +714,27 @@ def api_cheques():
     if err:
         con.close()
         return err
-    q = ("SELECT ch.*, m.razon_social AS librador, "
-         "  (SELECT p.numero FROM pagos p WHERE p.id=ch.pago_origen_id) AS recibo_origen "
-         "FROM cheques ch LEFT JOIN maestro_entidades m ON m.cuit=ch.cuit_librador "
+    # LOS TRES ROLES de un cheque recibido (Juan, 2026-08-31):
+    #   LIBRADOR  — quién firmó el cheque. Puede no ser el cliente.
+    #   CLIENTE   — quién nos lo dio, en la cobranza. Es el que cancela factura.
+    #   DESTINO   — dónde terminó: un PROVEEDOR (endosado) o un BANCO (depositado).
+    #
+    # Acá NO hay cliente de fantasía: el cheque recibido ES una cobranza y el
+    # cliente sale del recibo que lo trajo. (En el ERP existe la fantasía porque
+    # ahí entran cheques de terceros sin venta detrás; ese circuito no aplica.)
+    q = ("SELECT ch.*, "
+         "  ml.razon_social AS librador, "
+         "  (SELECT p.numero FROM pagos p WHERE p.id=ch.pago_origen_id) AS recibo_origen, "
+         "  (SELECT mc.razon_social FROM pagos p "
+         "     JOIN entidades_cliente ec ON ec.id=p.entidad_id "
+         "     JOIN maestro_entidades mc ON mc.cuit=ec.cuit "
+         "   WHERE p.id=ch.pago_origen_id) AS cliente, "
+         "  (SELECT mp.razon_social FROM entidades_cliente ep "
+         "     JOIN maestro_entidades mp ON mp.cuit=ep.cuit "
+         "   WHERE ep.id=ch.endoso_entidad_id) AS endosado_a, "
+         "  (SELECT cb.banco FROM cuentas_bancarias cb "
+         "   WHERE cb.id=ch.deposito_cuenta_id) AS depositado_en "
+         "FROM cheques ch LEFT JOIN maestro_entidades ml ON ml.cuit=ch.cuit_librador "
          "WHERE ch.cliente_id=?")
     args = [cli["id"]]
     if request.args.get("origen") in ("recibido", "emitido"):
@@ -966,7 +984,12 @@ def api_pagos_alta():
                         "INSERT INTO cheques (cliente_id, origen, numero, banco, cuit_librador, cuenta_id, "
                         " fecha_emision, fecha_pago, importe, estado, pago_origen_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (cid, "recibido" if recibido else "emitido", d["numero"].strip(), d.get("banco"),
-                         re.sub(r"\D", "", d.get("cuit_librador") or ent["cuit"]) if recibido else None,
+                         # ⚠ El librador NO se completa con el CUIT del cliente. Son
+                         # roles distintos: el que firma el cheque puede no ser el
+                         # que nos lo dio. Ponerle el del cliente diría que lo firmó
+                         # él, y es un dato que quizá nadie miró. Si no se sabe,
+                         # queda vacío — el cliente ya está en el recibo.
+                         (re.sub(r"\D", "", d.get("cuit_librador") or "") or None) if recibido else None,
                          d.get("cuenta_id") if not recibido else None,
                          d.get("fecha_emision") or fecha, (d.get("fecha_pago") or fecha)[:10], imp,
                          "en_cartera" if recibido else "emitido", pago_id if recibido else None))
@@ -1148,10 +1171,16 @@ def api_conciliacion_auto():
             # el cheque se debitó/acreditó de verdad: ya no está en el aire
             con.execute("UPDATE cheques SET estado=? WHERE id=?",
                         ("debitado" if ch["origen"] == "emitido" else "cobrado", oid))
-            # y el banco se nutre: al depósito le queda el CUIT del librador
-            if ch["cuit_librador"]:
+            # El banco se nutre: al depósito le queda el CUIT del LIBRADOR, que
+            # es de cuya cuenta salió la plata. Si no se sabe quién libró, cae
+            # al CLIENTE que lo entregó — es el dato que sí tenemos y el que
+            # sirve para conciliar contra sus facturas.
+            cuit = ch["cuit_librador"] or (con.execute(
+                "SELECT ec.cuit FROM pagos p JOIN entidades_cliente ec ON ec.id=p.entidad_id "
+                "WHERE p.id=?", (ch["pago_origen_id"],)).fetchone() or {"cuit": None})["cuit"]
+            if cuit:
                 con.execute("UPDATE movimientos_banco SET cuit_contraparte=? WHERE id=?",
-                            (ch["cuit_librador"], mov["id"]))
+                            (cuit, mov["id"]))
         else:
             pago_id = _pago_intermedio(con, cid, mov, oid)
             con.execute("UPDATE conciliaciones SET pago_id=? WHERE movimiento_id=?", (pago_id, mov["id"]))

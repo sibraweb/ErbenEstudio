@@ -127,14 +127,32 @@ factura por destino cuando haga falta. El reparto es **por porcentaje desde el
 día uno** — una factura puede tocar dos centros, y en el ERP dejarlo como un
 solo campo obligó a rehacer la tabla.
 
-### Cheques: SOLO dos clases
+### Cheques: SOLO dos clases, y TRES roles
+
 **Emitidos** (propios del cliente) y **cobrados** (entran únicamente por una
 cobranza; se depositan o se endosan).
 
-**No existe "me dieron" ni "me prestaron".** En el ERP esas dos clases arrastran
-todo el circuito de cliente real ↔ cliente de fantasía, el bloqueo del depósito
-hasta que aparezca la factura de venta, y la cadena de endosos. Nada de eso
-aplica acá y meterlo sería complejidad pura.
+**No existe "me dieron" ni "me prestaron", y por lo tanto no existe el cliente
+de fantasía.** En el ERP la fantasía hace falta porque ahí entran cheques de
+terceros sin una venta detrás: hay que esperar a que aparezca la factura para
+saber a qué cliente pertenecen. **Acá el cheque recibido ES una cobranza**, así
+que el cliente se sabe desde el momento en que entra — sale del recibo que lo
+trajo. Ese circuito entero (fantasía, bloqueo del depósito, cadena de endosos
+en dos tiempos) no aplica y meterlo sería complejidad pura.
+
+**Los tres roles de un cheque cobrado** (Juan, 2026-08-31), que son distintos y
+no se completan uno con otro:
+
+| Rol | Quién es | De dónde sale |
+|---|---|---|
+| **Librador** | el que firmó el cheque | `cheques.cuit_librador` — puede no saberse, y entonces queda **vacío** |
+| **Cliente** | el que nos lo dio; es el que cancela factura | del recibo de cobranza (`pago_origen_id` → la entidad del pago) |
+| **Destino** | dónde termina | un **proveedor** (`endoso_entidad_id`) o un **banco** (`deposito_cuenta_id`) |
+
+⚠ **El librador no se rellena con el CUIT del cliente.** Hasta el 31/08 el alta
+lo hacía: si no se cargaba librador, guardaba el del cliente. Eso afirma que el
+cliente firmó el cheque, cuando puede haberlo recibido de un tercero — y nadie
+se enteraría. Si no se sabe, se deja vacío; el cliente ya está en el recibo.
 
 ### Tarjetas: todavía no
 El módulo no existe y no está previsto por ahora.
@@ -217,5 +235,5 @@ hubo de nuevo que podamos importar acá"*. Lo que se revisó y qué se decidió:
 | `IVA__CRITERIO_UNICO.md` | **aplicado** | Todo COMPROBANTE muestra neto · IVA · total; todo PAGO es por el total. En la vista Documentos los pagos van con guión, no con cero: cero diría que su IVA es cero, y lo que pasa es que no aplica |
 | `shared/naturaleza.js` | no aplica | Clasifica al proveedor para costear obras, y acá no hay obras. El principio sí se aplicó antes: el dato se corrige donde uno se da cuenta de que falta (la actividad de IIBB, en la grilla de Facturas) |
 | `shared/formato.js` | ya resuelto | Allá convivían cinco formas de escribir un negativo. Acá siempre hubo una sola `plata()` |
-| `entidades_limpiar.py` | **anotado para después** | El maestro tiene 8 filas; el problema llega cuando crezca. La regla que hay que respetar: de las tres formas en que un tercero aparece dos veces, **una NO es un error** — la fantasía con OTRO CUIT es un par legítimo y fusionarla rompe la trazabilidad del cheque |
+| `entidades_limpiar.py` | **anotado para después** | El maestro tiene 8 filas; el problema llega cuando crezca. De allá sirve el criterio de quién sobrevive (gana la que tiene CUIT) y qué es basura. ⚠ Lo que NO se trae es la excepción de la fantasía: **acá no hay clientes de fantasía** (ver §6) |
 | `AUDITORIA__CONCILIACION_BANCARIA.md` | alineado | Su regla madre —*"lo que queda sin par no es un error de suma: es trabajo que falta hacer, y hay que poder verlo por nombre"*— ya está en el Tablero, que los lista por nombre y no como un número |
