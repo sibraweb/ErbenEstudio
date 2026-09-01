@@ -5,28 +5,44 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ERBEN ESTUDIO</title>
 <style>
+/* ══ IDENTIDAD ERBEN ESTUDIO ══
+   Del manual de marca: azul #2E5F85 · gris #A7AD83 · carbón #2B2F34 ·
+   hueso #F5F5F2 · dorado #D0A64B. Tipografía Century Gothic.
+
+   El DORADO es el acento: en el logo es el único color cálido y el que
+   remata la marca, así que acá manda los botones y lo seleccionado. El AZUL
+   queda de institucional (encabezados, foco), y el carbón de fondo.
+   Usar el azul de acento competiría con el fondo y apagaría la marca. */
 :root{
-  --bg:#0b1220; --bg2:#111a2e; --bg3:#18233c; --hover:#22304f;
-  --bor:#22304f; --bor2:#18233c;
-  --txt:#e6edf7; --txt2:#b9c6db; --mut:#7f8ea8;
-  --ac:#0ea678; --ac2:#14c48e; --warn:#e0a53a; --bad:#e05a4a;
+  --marca-azul:#2E5F85; --marca-oro:#D0A64B; --marca-gris:#A7AD83;
+  --marca-carbon:#2B2F34; --marca-hueso:#F5F5F2;
+
+  --bg:#1B1E22; --bg2:#22262B; --bg3:#2B2F34; --hover:#363B42;
+  --bor:#3A4048; --bor2:#2B2F34;
+  --txt:#F5F5F2; --txt2:#C6C9C4; --mut:#8A9098;
+  --ac:#D0A64B; --ac2:#E0BC70; --warn:#D0A64B; --bad:#C4614C;
 }
 html.light{
-  --bg:#f4f7fb; --bg2:#fff; --bg3:#eef3f9; --hover:#e2eaf4;
-  --bor:#cfdbe9; --bor2:#e6edf5;
-  --txt:#0d1a2b; --txt2:#33465e; --mut:#66788f;
+  --bg:#F5F5F2; --bg2:#FFFFFF; --bg3:#EDEDE8; --hover:#E2E2DC;
+  --bor:#D2D2CB; --bor2:#E8E8E2;
+  --txt:#2B2F34; --txt2:#4A5058; --mut:#79808A;
+  --ac:#A97F2C; --ac2:#8C6820;   /* el oro se oscurece en claro: sobre blanco no se lee */
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+/* Century Gothic es la del manual y está en Windows. Las de respaldo son
+   geométricas del mismo aire, para que no cambie el carácter si falta. */
+body{background:var(--bg);color:var(--txt);
+  font:14px/1.55 'Century Gothic','URW Gothic','Questrial','Futura','Trebuchet MS',sans-serif}
+h2,.logo-txt b,.card .v{letter-spacing:.01em}
 a{color:inherit;text-decoration:none}
 button,input,select,textarea{font:inherit;color:inherit}
 
 .logo{display:flex;align-items:center;gap:10px;flex-shrink:0}
-.logo-mark{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--ac),#0b7f5c);
-  display:grid;place-items:center;font-weight:800;color:#fff;font-size:15px;letter-spacing:-.5px;flex-shrink:0}
+.logo-mark{width:34px;height:34px;flex-shrink:0}
 .logo-txt{line-height:1}
-.logo-txt b{font-size:16px;font-weight:800}
-.logo-txt span{display:block;font-size:9px;letter-spacing:.3em;color:var(--mut);margin-top:3px;text-transform:uppercase}
+.logo-txt b{font-size:15px;font-weight:700;letter-spacing:.06em}
+.logo-txt span{display:block;font-size:8px;letter-spacing:.34em;color:var(--marca-oro);
+  margin-top:4px;text-transform:uppercase}
 
 /* ── la fila de arriba: el filtro de empresa manda sobre todo ── */
 header{background:var(--bg2);border-bottom:1px solid var(--bor2);padding:10px 16px;position:sticky;top:0;z-index:50}
@@ -60,15 +76,20 @@ h2{font-size:20px;font-weight:700;margin-bottom:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{text-align:left;padding:9px 12px;font-size:11px;color:var(--mut);text-transform:uppercase;
   letter-spacing:.05em;border-bottom:1px solid var(--bor);white-space:nowrap}
+th[data-col]{cursor:pointer;user-select:none;position:relative;padding-right:20px}
+th[data-col]:hover{color:var(--txt)}
+th[data-col]::after{content:'⇅';position:absolute;right:7px;opacity:.28;font-size:10px}
+th[data-col][data-orden="asc"]::after{content:'↑';opacity:1;color:var(--ac)}
+th[data-col][data-orden="desc"]::after{content:'↓';opacity:1;color:var(--ac)}
 td{padding:9px 12px;border-bottom:1px solid var(--bor2);vertical-align:top}
 tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--bg3)}
 tr.click{cursor:pointer}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tabla-wrap{overflow-x:auto}
-button{background:var(--ac);color:#fff;border:0;border-radius:7px;padding:8px 14px;font-size:13px;
-  font-weight:600;cursor:pointer;transition:.15s}
-button:hover{background:var(--ac2)}
+button{background:var(--marca-oro);color:#2B2F34;border:0;border-radius:6px;padding:8px 14px;
+  font-size:13px;font-weight:700;cursor:pointer;transition:.15s;letter-spacing:.02em}
+button:hover{background:#E0BC70}
 button.g{background:var(--bg3);color:var(--txt2);border:1px solid var(--bor)}
 button.g:hover{background:var(--hover);color:var(--txt)}
 button.xs{padding:4px 9px;font-size:11.5px;font-weight:500}
@@ -79,16 +100,16 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
 .f{display:grid;gap:11px;grid-template-columns:repeat(auto-fit,minmax(155px,1fr))}
 .f .full{grid-column:1/-1}
 .badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:600;white-space:nowrap}
-.b-ok{background:rgba(14,166,120,.16);color:var(--ac2)}
-.b-warn{background:rgba(224,165,58,.16);color:var(--warn)}
-.b-bad{background:rgba(224,90,74,.16);color:var(--bad)}
+.b-ok{background:rgba(46,95,133,.22);color:#7FB2DA}
+.b-warn{background:rgba(208,166,75,.18);color:var(--marca-oro)}
+.b-bad{background:rgba(196,97,76,.18);color:#E28873}
 .b-mut{background:var(--bg3);color:var(--mut)}
 .vacio{padding:32px 16px;text-align:center;color:var(--mut);font-size:13px}
 .tabs{display:flex;gap:2px;margin-bottom:14px;border-bottom:1px solid var(--bor);overflow-x:auto}
 .tabs button{background:none;color:var(--mut);border:0;border-bottom:2px solid transparent;
   border-radius:0;padding:8px 14px;font-weight:500;white-space:nowrap}
 .tabs button.on{color:var(--ac2);border-bottom-color:var(--ac)}
-.pos{color:var(--ac2)} .neg{color:var(--bad)} .amb{color:var(--warn)}
+.pos{color:#7FB2DA} .neg{color:#E28873} .amb{color:var(--marca-oro)}
 .mini{font-size:11.5px;color:var(--mut)}
 .aviso{background:var(--bg2);border:1px solid var(--bor);border-left:3px solid var(--ac);
   border-radius:8px;padding:12px 14px;font-size:12.5px;color:var(--txt2);margin-bottom:16px}
@@ -108,8 +129,18 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
 
 <header><div class="hd">
   <div class="logo">
-    <div class="logo-mark">EE</div>
-    <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Contable</span></div>
+    <svg class="logo-mark" viewBox="0 0 100 100" aria-label="ERBEN ESTUDIO">
+        <g>
+          <path d="M50 6 L50 22 L14 48 L4 41 Z" fill="#2E5F85"/>
+          <path d="M50 6 L50 22 L86 48 L96 41 Z" fill="#A7AD83"/>
+          <path d="M50 32 L50 48 L14 74 L4 67 Z" fill="#2E5F85"/>
+          <path d="M50 32 L50 48 L86 74 L96 67 Z" fill="#A7AD83"/>
+          <path d="M50 58 L50 74 L14 100 L4 93 Z" fill="#2E5F85"/>
+          <path d="M50 58 L50 74 L86 100 L96 93 Z" fill="#A7AD83"/>
+          <path d="M4 93 L14 100 L4 100 Z" fill="#D0A64B"/>
+        </g>
+      </svg>
+    <div class="logo-txt"><b>ERBEN ESTUDIO</b><span>Forjando legado</span></div>
   </div>
   <!-- EL FILTRO: se elige una empresa y TODOS los módulos filtran por ella.
        No hay ALL: el sistema trabaja con una sola empresa por vez. -->
@@ -194,11 +225,72 @@ const val = id => ($('#'+id)?.value ?? '').trim();
 const num = id => { const v = val(id); return v === '' ? null : parseFloat(v.replace(',','.')); };
 function tabla(cols, filas, opts){
   return `<div class="tabla-wrap"><table><thead><tr>${
-    cols.map(c => `<th${/importe|monto|total|base|saldo|debo|debe|aplicado/i.test(c) ? ' class="num"' : ''}>${c}</th>`).join('')
+    cols.map(c => `<th data-col${/importe|monto|total|base|saldo|debo|debe|aplicado/i.test(c) ? ' class="num"' : ''}>${c}</th>`).join('')
   }</tr></thead><tbody>${filas.map((f,i) => `<tr${opts?.onclick ? ` class="click" onclick="${opts.onclick(i)}"` : ''}>${
     f.map(c => typeof c === 'object' && c?.n !== undefined ? `<td class="num">${c.n}</td>` : `<td>${c}</td>`).join('')
   }</tr>`).join('')}</tbody></table></div>`;
 }
+/* ══ ORDENAR CUALQUIER TABLA POR SU ENCABEZADO ══
+   Traído de `ERP/shared/tabla-orden.js` (pedido de Juan, 21/08). Acá no hay
+   filas de detalle, así que esa parte no se porta; sí las otras dos trampas,
+   que son las que rompen un ordenador ingenuo:
+
+   1. LOS NÚMEROS ARGENTINOS: «$ 1.234,56» como texto pone 1.000 antes que 999.
+      El punto agrupa y la coma decide los centavos, al revés que en inglés.
+   2. LAS FECHAS dd/mm/aaaa: como texto, 02/01/2026 va antes que 15/12/2025.
+
+   Y una tercera propia: las celdas traen HTML (pastillas, botones), así que se
+   compara por el TEXTO visible, no por el markup. */
+function valorCelda(td){
+  if (!td) return null;
+  const crudo = (td.getAttribute('data-orden') ?? td.textContent ?? '').trim();
+  if (!crudo || crudo === '—' || crudo === '-') return null;   // vacíos al final
+
+  const dmy = crudo.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (dmy) return Number(dmy[3] + dmy[2].padStart(2,'0') + dmy[1].padStart(2,'0'));
+  const iso = crudo.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return Number(iso[1] + iso[2] + iso[3]);
+
+  const limpio = crudo.replace(/[$\s ]/g,'');
+  if (/^-?[\d.]+(,\d+)?$/.test(limpio)){
+    const n = Number(limpio.replace(/\./g,'').replace(',','.'));
+    if (!isNaN(n)) return n;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(limpio)) return Number(limpio);
+  return crudo.toLocaleLowerCase('es-AR');
+}
+function compararCeldas(a, b){
+  // los vacíos SIEMPRE al final: una fila sin fecha arriba de todo no sirve
+  if (a === null && b === null) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b), 'es-AR', {numeric:true});
+}
+function ordenarTabla(th){
+  const tabla = th.closest('table'), cuerpo = tabla.tBodies[0];
+  if (!cuerpo) return;
+  const i = [...th.parentNode.children].indexOf(th);
+  const desc = th.getAttribute('data-orden') === 'asc';
+  th.parentNode.querySelectorAll('th[data-col]').forEach(x => x.removeAttribute('data-orden'));
+  th.setAttribute('data-orden', desc ? 'desc' : 'asc');
+
+  // el índice original desempata: filas iguales no se barajan solas
+  const filas = [...cuerpo.rows].map((tr, n) => ({tr, clave: valorCelda(tr.cells[i]), n}));
+  filas.sort((x, y) => {
+    const c = compararCeldas(x.clave, y.clave);
+    return c !== 0 ? (desc ? -c : c) : x.n - y.n;
+  });
+  const frag = document.createDocumentFragment();
+  filas.forEach(f => frag.appendChild(f.tr));
+  cuerpo.appendChild(frag);
+}
+// Un solo listener en el documento: sobrevive a que cualquier vista se repinte.
+document.addEventListener('click', e => {
+  const th = e.target.closest('th[data-col]');
+  if (th) ordenarTabla(th);
+});
+
 function badgeEstado(e){
   const cls = {pendiente:'b-warn', presentado:'b-ok', pagado:'b-ok', en_cartera:'b-ok', emitido:'b-warn',
     depositado:'b-mut', endosado:'b-mut', debitado:'b-mut', cobrado:'b-mut', rechazado:'b-bad',
@@ -289,8 +381,33 @@ async function precargar(){
     api('/api/c/cuentas').catch(()=>[]),
   ]);
 }
-const optEnt = (f = () => true) => ENT.filter(f)
-  .map(e => `<option value="${e.id}">${esc(e.razon_social)}</option>`).join('');
+/* ══ BUSCAR UNA ENTIDAD POR NOMBRE, CUIT O ALIAS ══
+   Traído de `ERP/shared/entidades.js`. Juan (31/08): «Chipi es Fabián Alcaraz
+   pero es más fácil escribir chipi. El sistema genera con nombre y CUIT, pero
+   buscarlos que sea por ambos».
+
+   ⚠ El alias sirve para BUSCAR, no para decidir identidad: si un alias apunta
+   a dos entidades, se ofrecen las dos y elige la persona. Elegir solo sería
+   imputarle una factura al que no es. */
+function normEnt(s){
+  return (s || '').toString().normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .toUpperCase().replace(/[^A-Z0-9]/g,'');
+}
+function coincideEntidad(e, q){
+  const n = normEnt(q);
+  if (!n) return true;
+  return normEnt(e.razon_social).includes(n)
+      || normEnt(e.cuit).includes(n)
+      || normEnt(e.alias_interno).includes(n);
+}
+function etiquetaEntidad(e){
+  const ali = e.alias_interno && normEnt(e.alias_interno) !== normEnt(e.razon_social)
+    ? ` · (${e.alias_interno})` : '';
+  return `${e.razon_social}${e.cuit ? ' · ' + e.cuit : ''}${ali}`;
+}
+
+const optEnt = (f = () => true, q = '') => ENT.filter(f).filter(e => coincideEntidad(e, q))
+  .map(e => `<option value="${e.id}">${esc(etiquetaEntidad(e))}</option>`).join('');
 const optCta = () => CTAS.map(c =>
   `<option value="${c.id}">${esc(c.banco)}${c.numero ? ' · ' + esc(c.numero) : ''}</option>`).join('');
 
@@ -569,11 +686,15 @@ async function tDoc(){
         <button class="${docFlujo==='ingreso'?'':'g'} xs" onclick="docFlujo='ingreso';tDoc()">Ingresos</button>
         <button class="${docFlujo==='egreso'?'':'g'} xs" onclick="docFlujo='egreso';tDoc()">Egresos</button>
       </div></div>
-      ${vis.length ? tabla(['Fecha','Clase','Documento','Entidad','Estado','Total','Saldo'],
+      ${vis.length ? tabla(['Fecha','Clase','Documento','Entidad','Estado','Neto','IVA','Total','Saldo'],
         vis.map(d => [fecha(d.fecha), `<span class="badge b-mut">${esc(d.clase)}</span>`,
           `${esc(d.detalle)}${d.cadena.length ? `<div class="cadena">↳ ${d.cadena.map(c => `<i>${esc(c)}</i>`).join(' · ')}</div>`
             : `<div class="cadena">↳ se aplica con ${esc(d.se_aplica_con)}</div>`}`,
           esc(d.entidad), badgeEstado(d.estado),
+          // Un PAGO no tiene neto ni IVA: es por el total. Poner un 0 ahí sería
+          // decir que su IVA es cero, y lo que pasa es que no aplica.
+          {n: d.neto == null ? '—' : plata(d.neto)},
+          {n: d.iva == null ? '—' : plata(d.iva)},
           {n:`<span class="${d.flujo==='egreso'?'neg':'pos'}">${plata(d.total)}</span>`},
           {n: d.saldo == null ? '—' : plata(d.saldo)}]))
         : '<div class="vacio">Sin documentos con ese filtro.</div>'}

@@ -1629,6 +1629,11 @@ def api_documentos():
             "clase": "factura", "id": f["id"], "fecha": f["fecha"],
             "detalle": f"{f['mov'].capitalize()} {f['tipo']} {f['punto_venta'] or ''}-{f['numero'] or ''}",
             "entidad": f["razon_social"], "total": f["total"], "aplicado": f["aplicado"],
+            # El criterio único de IVA (Juan, 26/08): TODO comprobante muestra
+            # los tres números —neto · IVA · total—; todo PAGO es por el total,
+            # un solo número. Son dos naturalezas distintas: el comprobante
+            # devenga (y su IVA es crédito o débito), el pago solo cancela.
+            "neto": f["neto"], "iva": f["iva"],
             "saldo": saldo, "flujo": "ingreso" if f["mov"] == "venta" else "egreso",
             "estado": "saldada" if abs(saldo) < 0.01 else ("parcial" if f["aplicado"] else "sin aplicar"),
             "se_aplica_con": "PAGO",

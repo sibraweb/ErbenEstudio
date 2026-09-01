@@ -203,3 +203,19 @@ scrapers.
 que deja el job de ARCA **en nuestro Drive**. Busca primero en el Drive del
 estudio y usa el nuestro como respaldo, así el día que exista el job propio
 deja de mirar para afuera sin tocar código.
+
+
+## 8. LO QUE SE TRAJO DEL ERP (revisión 2026-08-31)
+
+Juan: *"ya que estamos tomando este sistema de los módulos del ERP, fijate qué
+hubo de nuevo que podamos importar acá"*. Lo que se revisó y qué se decidió:
+
+| Del ERP | Acá | Por qué |
+|---|---|---|
+| `shared/tabla-orden.js` | **importado** | Ordenar cualquier tabla por su encabezado. Trae resueltas las dos trampas: los números argentinos (el punto agrupa, la coma decide) y las fechas dd/mm/aaaa. Se sumó una propia: las celdas traen HTML, así que compara por texto visible |
+| `shared/entidades.js` | **importado** | Buscar por nombre, CUIT **o alias**. ⚠ El alias sirve para BUSCAR, no para decidir identidad: si es ambiguo se ofrecen las opciones, nunca se elige solo |
+| `IVA__CRITERIO_UNICO.md` | **aplicado** | Todo COMPROBANTE muestra neto · IVA · total; todo PAGO es por el total. En la vista Documentos los pagos van con guión, no con cero: cero diría que su IVA es cero, y lo que pasa es que no aplica |
+| `shared/naturaleza.js` | no aplica | Clasifica al proveedor para costear obras, y acá no hay obras. El principio sí se aplicó antes: el dato se corrige donde uno se da cuenta de que falta (la actividad de IIBB, en la grilla de Facturas) |
+| `shared/formato.js` | ya resuelto | Allá convivían cinco formas de escribir un negativo. Acá siempre hubo una sola `plata()` |
+| `entidades_limpiar.py` | **anotado para después** | El maestro tiene 8 filas; el problema llega cuando crezca. La regla que hay que respetar: de las tres formas en que un tercero aparece dos veces, **una NO es un error** — la fantasía con OTRO CUIT es un par legítimo y fusionarla rompe la trazabilidad del cheque |
+| `AUDITORIA__CONCILIACION_BANCARIA.md` | alineado | Su regla madre —*"lo que queda sin par no es un error de suma: es trabajo que falta hacer, y hay que poder verlo por nombre"*— ya está en el Tablero, que los lista por nombre y no como un número |
