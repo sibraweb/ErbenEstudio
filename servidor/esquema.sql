@@ -184,6 +184,13 @@ CREATE TABLE cheques (
     numero         TEXT NOT NULL,
     banco          TEXT,
     cuit_librador  TEXT,                       -- recibido: quién lo firmó
+    -- El librador puede no estar en el maestro (te dan un cheque de alguien con
+    -- quien no operás). Sin este campo, el nombre se perdía y quedaba un CUIT
+    -- pelado en la grilla — o peor, nada.
+    librador_nombre TEXT,
+    -- A quién se lo dimos, en los EMITIDOS. En los recibidos ese rol lo ocupa
+    -- endoso_entidad_id (el proveedor al que se endosó).
+    beneficiario_entidad_id INTEGER REFERENCES entidades_cliente(id),
     cuenta_id      INTEGER REFERENCES cuentas_bancarias(id),  -- emitido: chequera
     fecha_emision  TEXT,
     fecha_pago     TEXT NOT NULL,              -- el vencimiento

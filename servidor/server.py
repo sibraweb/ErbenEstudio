@@ -183,6 +183,14 @@ def _migrar(con):
         con.execute("UPDATE vencimientos SET estado='dj_a_pagar' WHERE estado='presentado'")
         con.commit()
 
+    # ── el librador con nombre, y el beneficiario del emitido ──
+    cc = {f[1] for f in con.execute("PRAGMA table_info(cheques)")}
+    if "librador_nombre" not in cc:
+        print("  migrando: nombre del librador y beneficiario del cheque emitido…")
+        con.execute("ALTER TABLE cheques ADD COLUMN librador_nombre TEXT")
+        con.execute("ALTER TABLE cheques ADD COLUMN beneficiario_entidad_id INTEGER")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -722,8 +730,14 @@ def api_cheques():
     # Acá NO hay cliente de fantasía: el cheque recibido ES una cobranza y el
     # cliente sale del recibo que lo trajo. (En el ERP existe la fantasía porque
     # ahí entran cheques de terceros sin venta detrás; ese circuito no aplica.)
+    # El librador se busca primero en el maestro (por CUIT) y si no está, se
+    # muestra el nombre que se escribió a mano: media entidad se conoce por uno
+    # y media por el otro.
     q = ("SELECT ch.*, "
-         "  ml.razon_social AS librador, "
+         "  COALESCE(ml.razon_social, ch.librador_nombre) AS librador, "
+         "  (SELECT mb.razon_social FROM entidades_cliente eb "
+         "     JOIN maestro_entidades mb ON mb.cuit=eb.cuit "
+         "   WHERE eb.id=ch.beneficiario_entidad_id) AS beneficiario, "
          "  (SELECT p.numero FROM pagos p WHERE p.id=ch.pago_origen_id) AS recibo_origen, "
          "  (SELECT mc.razon_social FROM pagos p "
          "     JOIN entidades_cliente ec ON ec.id=p.entidad_id "
@@ -772,11 +786,21 @@ def api_cheques_alta():
     if b.get("cuenta_id") and not _de_este_cliente(con, "cuentas_bancarias", b["cuenta_id"], cli["id"]):
         con.close()
         return jsonify({"error": "cuenta inexistente para este cliente"}), 400
+    # A quién se lo damos. Es opcional porque a veces se carga la chequera
+    # entera antes de saber a quién va cada uno, pero si viene tiene que ser
+    # una entidad de ESTE cliente.
+    benef = b.get("beneficiario_entidad_id")
+    if benef and not _de_este_cliente(con, "entidades_cliente", benef, cli["id"]):
+        con.close()
+        return jsonify({"error": "entidad inexistente para este cliente"}), 400
+    if _n(b.get("importe")) <= 0:
+        con.close()
+        return jsonify({"error": "el importe tiene que ser mayor que cero"}), 400
     try:
         cur = con.execute(
-            "INSERT INTO cheques (cliente_id, origen, numero, banco, cuenta_id, fecha_emision, fecha_pago, "
-            " importe, estado, nota) VALUES (?,'emitido',?,?,?,?,?,?,'emitido',?)",
-            (cli["id"], b["numero"].strip(), b.get("banco"), b.get("cuenta_id"),
+            "INSERT INTO cheques (cliente_id, origen, numero, banco, cuenta_id, beneficiario_entidad_id, "
+            " fecha_emision, fecha_pago, importe, estado, nota) VALUES (?,'emitido',?,?,?,?,?,?,?,'emitido',?)",
+            (cli["id"], b["numero"].strip(), b.get("banco"), b.get("cuenta_id"), benef or None,
              b.get("fecha_emision") or _hoy(), (b.get("fecha_pago") or _hoy())[:10],
              _n(b.get("importe")), b.get("nota")))
     except sqlite3.IntegrityError:
@@ -981,8 +1005,9 @@ def api_pagos_alta():
                 recibido = b["direccion"] == "cobro"
                 try:
                     c2 = con.execute(
-                        "INSERT INTO cheques (cliente_id, origen, numero, banco, cuit_librador, cuenta_id, "
-                        " fecha_emision, fecha_pago, importe, estado, pago_origen_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO cheques (cliente_id, origen, numero, banco, cuit_librador, librador_nombre, "
+                        " cuenta_id, beneficiario_entidad_id, fecha_emision, fecha_pago, importe, estado, "
+                        " pago_origen_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (cid, "recibido" if recibido else "emitido", d["numero"].strip(), d.get("banco"),
                          # ⚠ El librador NO se completa con el CUIT del cliente. Son
                          # roles distintos: el que firma el cheque puede no ser el
@@ -990,7 +1015,10 @@ def api_pagos_alta():
                          # él, y es un dato que quizá nadie miró. Si no se sabe,
                          # queda vacío — el cliente ya está en el recibo.
                          (re.sub(r"\D", "", d.get("cuit_librador") or "") or None) if recibido else None,
+                         ((d.get("librador_nombre") or "").strip() or None) if recibido else None,
                          d.get("cuenta_id") if not recibido else None,
+                         # El emitido nace con beneficiario: es a quien le estamos pagando.
+                         None if recibido else ent["id"],
                          d.get("fecha_emision") or fecha, (d.get("fecha_pago") or fecha)[:10], imp,
                          "en_cartera" if recibido else "emitido", pago_id if recibido else None))
                 except sqlite3.IntegrityError:

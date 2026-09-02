@@ -117,7 +117,18 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
   border:1px solid var(--ac);border-radius:8px;padding:11px 18px;font-size:13px;z-index:200;display:none;
   box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw}
 .hide{display:none!important}
+/* Depositar y endosar pedían los datos con prompt(): había que acordarse del
+   número de la cuenta o de la entidad y escribirlo bien. Es el mismo error que
+   el ERP ya corrigió — se elige de una lista, no se transcribe. */
+.modal{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.5);
+  display:flex;align-items:center;justify-content:center;padding:16px}
+.modal .box{background:var(--bg2);border:1px solid var(--bor);border-radius:10px;
+  max-width:520px;width:100%;max-height:88vh;overflow:auto;padding:18px}
+.modal .box h3{margin:0 0 4px;font-size:15px}
 .row-act{display:flex;gap:5px;flex-wrap:wrap}
+.chk{display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;
+  color:var(--txt);margin:4px 0;cursor:pointer}
+.chk input{width:auto;flex:none}
 .cand{background:var(--bg3);border:1px solid var(--bor);border-radius:7px;padding:8px 11px;margin-top:6px;
   display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}
 .cadena{font-size:11.5px;color:var(--mut);margin-top:3px}
@@ -183,6 +194,28 @@ const fecha = f => !f ? '—' : f.slice(0,10).split('-').reverse().join('/');
 const hoy = () => new Date().toISOString().slice(0,10);
 const periodoHoy = () => { const d = new Date(); return String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear(); };
 function toggle(sel){ $(sel).classList.toggle('hide'); }
+/* Un formulario chico encima de la pantalla. Devuelve una promesa: resuelve con
+   los valores de los campos, o con null si se cancela. */
+function modal(titulo, ayuda, campos, textoOk = 'Aceptar'){
+  return new Promise(res => {
+    const d = document.createElement('div');
+    d.className = 'modal';
+    d.innerHTML = `<div class="box"><h3>${esc(titulo)}</h3>
+      <div class="mini" style="margin-bottom:12px">${ayuda}</div>
+      <div class="f">${campos.map(c => `<div class="${c.ancho || 'full'}">
+        <label>${esc(c.label)}</label>${c.html}</div>`).join('')}</div>
+      <div class="row-act" style="justify-content:flex-end;margin-top:16px">
+        <button class="g" id="md-no">Cancelar</button>
+        <button id="md-si">${esc(textoOk)}</button></div></div>`;
+    document.body.appendChild(d);
+    const cerrar = v => { d.remove(); res(v); };
+    d.querySelector('#md-no').onclick = () => cerrar(null);
+    d.onclick = e => { if (e.target === d) cerrar(null); };
+    d.querySelector('#md-si').onclick = () =>
+      cerrar(Object.fromEntries(campos.map(c => [c.id, val(c.id)])));
+    setTimeout(() => d.querySelector('input,select')?.focus(), 30);
+  });
+}
 function tema(){ document.documentElement.classList.toggle('light');
   localStorage.setItem('ee-tema', document.documentElement.className); }
 function toast(msg, malo){
@@ -941,7 +974,16 @@ async function altaMov(){
   }catch(e){ toast(e.message, true); }
 }
 
-/* ══ CHEQUES ══ */
+/* ══ CHEQUES ══
+   Copiado del módulo del ERP, pero SIN los circuitos que acá no existen: no hay
+   "me dieron" ni "prestados", y no hay cliente de fantasía. Quedan dos clases y
+   tres nombres:
+     recibido → LIBRADOR (lo firmó) · CLIENTE (nos lo dio) · DESTINO (banco o proveedor)
+     emitido  → lo libramos nosotros y va a un BENEFICIARIO
+   El recibido se carga desde acá, pero por dentro sigue siendo una COBRANZA:
+   nace con su recibo. Si entrara suelto habría plata en cartera sin dueño. */
+let chImpagas = [];
+
 async function vCheques(){
   cargando('Cheques');
   const chs = await api('/api/c/cheques');
@@ -954,6 +996,66 @@ async function vCheques(){
       el <b>librador</b> lo firmó · el <b>cliente</b> nos lo dio en la cobranza y es el que
       cancela factura · y termina en un <b>proveedor</b> (endosado) o en un <b>banco</b> (depositado).
       Si no se sabe quién libró, queda vacío: no se completa con el cliente.</div>
+
+    <div class="row-act" style="margin-bottom:16px">
+      <button onclick="abrirChq('rec')">+ Cheque recibido</button>
+      <button class="g" onclick="abrirChq('emi')">+ Cheque emitido</button>
+    </div>
+
+    <div class="panel hide" id="ch-rec">
+      <div class="panel-h"><b>Nuevo cheque recibido</b>
+        <span class="mini">se guarda como cobranza, con su recibo</span></div>
+      <div class="panel-b">
+        <div class="f">
+          <div class="full"><label>Cliente que nos lo dio</label>
+            <select id="nr-ent" onchange="chImpagasDe()">${optEnt(e => e.es_cliente) || optEnt()}</select></div>
+          <div><label>Nº de recibo</label><input id="nr-recibo" placeholder="REC-0001"></div>
+          <div><label>Fecha de la cobranza</label><input type="date" id="nr-fecha" value="${hoy()}"></div>
+        </div>
+        <div style="margin-top:14px"><b style="font-size:13px">El cheque</b>
+          <div class="f" style="margin-top:6px">
+            <div><label>Número</label><input id="nr-num"></div>
+            <div><label>Banco</label><input id="nr-banco"></div>
+            <div><label>Importe</label><input id="nr-imp" type="number" step="0.01"></div>
+            <div><label>Emisión</label><input type="date" id="nr-fe" value="${hoy()}"></div>
+            <div><label>Vencimiento</label><input type="date" id="nr-fp" value="${hoy()}"></div>
+          </div></div>
+        <div style="margin-top:14px"><b style="font-size:13px">¿Quién lo firmó?</b>
+          <div class="mini" style="margin:4px 0 6px">El librador puede ser un tercero. Se deja vacío si no
+            se sabe — el tilde es para decir <i>expresamente</i> que lo firmó el mismo cliente.</div>
+          <label class="chk"><input type="checkbox" id="nr-lib-igual" onchange="chLibradorIgual()">
+            Lo firmó el mismo cliente</label>
+          <div class="f" style="margin-top:6px">
+            <div><label>Librador</label><input id="nr-lib-nom" placeholder="razón social"></div>
+            <div><label>CUIT del librador</label><input id="nr-lib-cuit" placeholder="opcional"></div>
+          </div></div>
+        <div style="margin-top:14px"><b style="font-size:13px">¿Qué facturas cancela?</b>
+          <div id="nr-facturas" class="mini" style="margin-top:6px">Elegí un cliente…</div></div>
+        <div style="margin-top:16px"><button onclick="altaChequeRecibido()">Guardar cobranza</button></div>
+      </div>
+    </div>
+
+    <div class="panel hide" id="ch-emi">
+      <div class="panel-h"><b>Nuevo cheque emitido</b>
+        <span class="mini">lo libramos nosotros</span></div>
+      <div class="panel-b"><div class="f">
+        <div><label>Número</label><input id="ne-num"></div>
+        <div><label>Banco</label><input id="ne-banco"></div>
+        <div><label>Cuenta (chequera)</label><select id="ne-cta"><option value="">—</option>${optCta()}</select></div>
+        <div class="full"><label>Beneficiario — a quién se lo damos</label>
+          <select id="ne-benef"><option value="">— sin definir —</option>${
+            optEnt(e => e.es_proveedor) || optEnt()}</select></div>
+        <div><label>Importe</label><input id="ne-imp" type="number" step="0.01"></div>
+        <div><label>Emisión</label><input type="date" id="ne-fe" value="${hoy()}"></div>
+        <div><label>Vencimiento</label><input type="date" id="ne-fp" value="${hoy()}"></div>
+        <div class="full"><label>Observaciones</label><input id="ne-nota"></div>
+      </div>
+      <div class="mini" style="margin-top:8px">Si el cheque sale para pagar facturas, conviene emitirlo
+        desde <a href="#pagos">Pagos</a>: ahí queda pegado al recibo y cancela la deuda.</div>
+      <div style="margin-top:14px"><button onclick="altaChequeEmitido()">Emitir</button></div>
+      </div>
+    </div>
+
     <div class="panel"><div class="panel-h"><b>Cobrados (recibidos) — ${rec.length}</b>
       <span class="mini">en cartera: ${plata(rec.filter(c=>c.estado==='en_cartera').reduce((s,c)=>s+c.importe,0))}</span></div>
       ${rec.length ? tabla(['Número','Banco','Librador','Cliente que lo dio','Destino','Vence','Importe','Estado','Acciones'],
@@ -971,42 +1073,101 @@ async function vCheques(){
             <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
             <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']))
         : `<div class="vacio">Sin cheques cobrados.<br>
-           <span class="mini">Se cargan desde Pagos → cobranza con medio cheque.</span></div>`}
+           <span class="mini">Se cargan con "+ Cheque recibido", o desde Pagos → cobranza con medio cheque.</span></div>`}
     </div>
     <div class="panel"><div class="panel-h"><b>Emitidos — ${emi.length}</b>
-      <button class="g xs" onclick="toggle('#ch-alta')">Emitir uno</button></div>
-      <div class="panel-b hide" id="ch-alta"><div class="f">
-        <div><label>Número</label><input id="nch-num"></div>
-        <div><label>Banco</label><input id="nch-banco"></div>
-        <div><label>Cuenta</label><select id="nch-cta"><option value="">—</option>${optCta()}</select></div>
-        <div><label>Fecha de pago</label><input type="date" id="nch-fp" value="${hoy()}"></div>
-        <div><label>Importe</label><input id="nch-imp" type="number" step="0.01"></div>
-        <div style="display:flex;align-items:flex-end"><button onclick="altaCheque()">Emitir</button></div>
-      </div></div>
-      ${emi.length ? tabla(['Número','Banco','Vence','Importe','Estado'],
+      <span class="mini">a pagar: ${plata(emi.filter(c=>c.estado==='emitido').reduce((s,c)=>s+c.importe,0))}</span></div>
+      ${emi.length ? tabla(['Número','Banco','Beneficiario','Vence','Importe','Estado'],
         emi.map(c => [esc(c.numero), esc(c.banco||'—'),
+          c.beneficiario ? esc(c.beneficiario) : '<span class="mini">sin definir</span>',
           `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
           {n:plata(c.importe)}, badgeEstado(c.estado)]))
         : '<div class="vacio">Sin cheques emitidos.</div>'}
     </div>`);
 }
-async function altaCheque(){
-  try{ await post('/api/c/cheques', {origen:'emitido', numero: val('nch-num'), banco: val('nch-banco'),
-    cuenta_id: val('nch-cta') ? +val('nch-cta') : null, fecha_pago: val('nch-fp'), importe: num('nch-imp')});
+
+function abrirChq(cual){
+  $(cual === 'rec' ? '#ch-emi' : '#ch-rec').classList.add('hide');
+  toggle('#ch-' + cual);
+  if (cual === 'rec') chImpagasDe();
+}
+
+/* El tilde COPIA el cliente al librador y bloquea los campos: queda escrito que
+   lo firmó él porque alguien lo dijo, no porque el sistema lo haya supuesto. */
+function chLibradorIgual(){
+  const igual = $('#nr-lib-igual').checked;
+  const e = ENT.find(x => x.id === +val('nr-ent'));
+  const nom = $('#nr-lib-nom'), cuit = $('#nr-lib-cuit');
+  if (igual && !e){ $('#nr-lib-igual').checked = false; return toast('Elegí primero el cliente', true); }
+  if (igual){ nom.value = e.razon_social; cuit.value = e.cuit || ''; }
+  else { nom.value = ''; cuit.value = ''; }
+  nom.disabled = cuit.disabled = igual;
+}
+
+async function chImpagasDe(){
+  const cont = $('#nr-facturas'); if (!cont) return;
+  if ($('#nr-lib-igual')?.checked) chLibradorIgual();
+  const eid = +val('nr-ent');
+  if (!eid){ chImpagas = []; cont.textContent = 'Elegí un cliente…'; return; }
+  chImpagas = (await api('/api/c/facturas?mov=venta&impagas=1')).filter(f => f.entidad_id === eid);
+  cont.innerHTML = chImpagas.length ? chImpagas.map((f,i) => `
+    <label class="chk">
+      <input type="checkbox" id="nrf-${i}" onchange="chSumar()">
+      ${esc(f.tipo)} ${esc(f.punto_venta||'')}-${esc(f.numero||'')} · ${fecha(f.fecha)} ·
+      saldo <b>${plata(f.saldo)}</b></label>`).join('')
+    + '<div class="mini" style="margin-top:6px">Si no tildás ninguna, la cobranza queda <b>a cuenta</b> y se imputa después.</div>'
+    : '<span class="mini">No tiene facturas impagas — la cobranza va a quedar a cuenta.</span>';
+}
+/* El importe del cheque se propone con lo que suman las facturas tildadas: casi
+   siempre es eso, y si no, se pisa a mano. */
+function chSumar(){
+  const t = chImpagas.reduce((s,f,i) => s + ($('#nrf-'+i)?.checked ? f.saldo : 0), 0);
+  const inp = $('#nr-imp'); if (inp && t) inp.value = t.toFixed(2);
+}
+
+async function altaChequeRecibido(){
+  const aplicaciones = chImpagas.map((f,i) => $('#nrf-'+i)?.checked ? {factura_id:f.id, importe:f.saldo} : null)
+    .filter(Boolean);
+  try{
+    await post('/api/c/pagos', {direccion:'cobro', entidad_id:+val('nr-ent'),
+      fecha: val('nr-fecha'), numero: val('nr-recibo'), aplicaciones,
+      medios:[{medio:'cheque', importe:num('nr-imp'), cheque:{
+        numero: val('nr-num'), banco: val('nr-banco'),
+        fecha_emision: val('nr-fe'), fecha_pago: val('nr-fp'),
+        librador_nombre: val('nr-lib-nom'), cuit_librador: val('nr-lib-cuit')}}]});
+    toast('Cheque en cartera — quedó su recibo de cobranza'); vCheques();
+  }catch(e){ toast(e.message, true); }
+}
+
+async function altaChequeEmitido(){
+  try{ await post('/api/c/cheques', {origen:'emitido', numero: val('ne-num'), banco: val('ne-banco'),
+    cuenta_id: val('ne-cta') ? +val('ne-cta') : null,
+    beneficiario_entidad_id: val('ne-benef') ? +val('ne-benef') : null,
+    fecha_emision: val('ne-fe'), fecha_pago: val('ne-fp'),
+    importe: num('ne-imp'), nota: val('ne-nota')});
     toast('Cheque emitido'); vCheques();
   }catch(e){ toast(e.message, true); }
 }
+
 async function depositar(id){
   if (!CTAS.length) return toast('Primero cargá una cuenta bancaria', true);
-  const cta = prompt('¿En qué cuenta?\n' + CTAS.map(c => `${c.id} = ${c.banco} ${c.numero||''}`).join('\n'), CTAS[0].id);
-  if (!cta) return;
-  try{ await post(`/api/c/cheques/${id}/depositar`, {cuenta_id:+cta, fecha:hoy()});
+  const r = await modal('Depositar cheque', 'Se elige la cuenta de una lista: escribir el número a mano '
+    + 'es como se cargaban cuentas repetidas.', [
+    {id:'md-cta', label:'Cuenta donde se deposita', html:`<select id="md-cta">${optCta()}</select>`},
+    {id:'md-fec', label:'Fecha de depósito', html:`<input type="date" id="md-fec" value="${hoy()}">`}
+  ], 'Depositar');
+  if (!r) return;
+  try{ await post(`/api/c/cheques/${id}/depositar`, {cuenta_id:+r['md-cta'], fecha:r['md-fec']});
     toast('Depositado'); vCheques(); }catch(e){ toast(e.message, true); }
 }
+
 async function endosar(id){
-  const e = prompt('¿A qué entidad?\n' + ENT.map(x => `${x.id} = ${x.razon_social}`).join('\n'));
-  if (!e) return;
-  try{ await post(`/api/c/cheques/${id}/endosar`, {entidad_id:+e});
+  const r = await modal('Endosar cheque', 'A qué proveedor se lo pasamos. Si el endoso cancela facturas, '
+    + 'conviene hacerlo desde <a href="#pagos">Pagos</a>: ahí queda el recibo.', [
+    {id:'md-ent', label:'Proveedor', html:`<select id="md-ent">${optEnt(e => e.es_proveedor) || optEnt()}</select>`}
+  ], 'Endosar');
+  if (!r) return;
+  try{ await post(`/api/c/cheques/${id}/endosar`, {entidad_id:+r['md-ent']});
     toast('Endosado'); vCheques(); }catch(err){ toast(err.message, true); }
 }
 
@@ -1017,14 +1178,20 @@ async function vPagos(){
   const ps = await api('/api/c/pagos');
   pintar(`
     <h2>Pagos y cobranzas</h2>
-    <div class="sub">Se cancelan facturas con movimientos de banco, cheques o efectivo.
+    <div class="sub">Se cancelan <b>facturas</b> —no hay certificados ni órdenes de compra, y no se
+      separa por obra— con movimientos de banco, cheques o efectivo.
       Lo que se paga por banco deja el CUIT y el recibo pegados al movimiento.</div>
-    <div class="panel"><div class="panel-h"><b>Nuevo comprobante</b>
-      <button class="g xs" onclick="toggle('#p-alta');prepararPago()">Mostrar / ocultar</button></div>
-      <div class="panel-b hide" id="p-alta">
+    <div class="row-act" style="margin-bottom:16px">
+      <button onclick="abrirPago('pago')">+ Nuevo pago</button>
+      <button class="g" onclick="abrirPago('cobro')">+ Nueva cobranza</button>
+    </div>
+    <div class="panel hide" id="p-alta"><div class="panel-h">
+      <b id="p-titulo">${pDir==='pago'?'Nuevo pago a proveedor':'Nueva cobranza de cliente'}</b>
+      <button class="g xs" onclick="toggle('#p-alta')">Cerrar</button></div>
+      <div class="panel-b">
         <div class="tabs">
-          <button class="${pDir==='pago'?'on':''}" onclick="pDir='pago';prepararPago()">Pago a proveedor</button>
-          <button class="${pDir==='cobro'?'on':''}" onclick="pDir='cobro';prepararPago()">Cobranza de cliente</button>
+          <button class="${pDir==='pago'?'on':''}" onclick="abrirPago('pago',1)">Pago a proveedor</button>
+          <button class="${pDir==='cobro'?'on':''}" onclick="abrirPago('cobro',1)">Cobranza de cliente</button>
         </div>
         <div class="f">
           <div class="full"><label>${pDir==='pago'?'Proveedor':'Cliente'}</label>
@@ -1055,6 +1222,17 @@ async function vPagos(){
           {n:plata(p.total)}]))}
     </div>` : '<div class="panel"><div class="vacio">Sin pagos ni cobranzas.</div></div>'}`);
 }
+/* Abrir ya elige la dirección: antes había que abrir el panel y DESPUÉS
+   acordarse de tildar la pestaña, y quedaban cobranzas cargadas como pagos. */
+function abrirPago(dir, yaAbierto){
+  pDir = dir;
+  if (!yaAbierto) $('#p-alta').classList.remove('hide');
+  const tit = $('#p-titulo');
+  if (tit) tit.textContent = dir === 'pago' ? 'Nuevo pago a proveedor' : 'Nueva cobranza de cliente';
+  const lbl = $('#np-ent')?.previousElementSibling;
+  if (lbl) lbl.textContent = dir === 'pago' ? 'Proveedor' : 'Cliente';
+  prepararPago();
+}
 function prepararPago(){ pMedios = []; pintarMedios(); cargarImpagas();
   const s = $('#np-ent'); if (s) s.innerHTML = optEnt(e => pDir==='pago' ? e.es_proveedor : e.es_cliente) || optEnt();
   document.querySelectorAll('#p-alta .tabs button').forEach((b,i) =>
@@ -1067,8 +1245,8 @@ async function cargarImpagas(){
   const fs = (await api(`/api/c/facturas?mov=${mov}&impagas=1`)).filter(f => f.entidad_id === eid);
   pFacturas = fs;
   cont.innerHTML = fs.length ? fs.map((f,i) => `
-    <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:13px;color:var(--txt);margin:4px 0">
-      <input type="checkbox" style="width:auto" id="pf-${i}" onchange="sumarSel()">
+    <label class="chk">
+      <input type="checkbox" id="pf-${i}" onchange="sumarSel()">
       ${esc(f.tipo)} ${esc(f.punto_venta||'')}-${esc(f.numero||'')} · ${fecha(f.fecha)} ·
       saldo <b>${plata(f.saldo)}</b></label>`).join('')
     : '<span class="mini">No tiene facturas impagas.</span>';

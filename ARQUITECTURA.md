@@ -145,14 +145,55 @@ no se completan uno con otro:
 
 | Rol | Quién es | De dónde sale |
 |---|---|---|
-| **Librador** | el que firmó el cheque | `cheques.cuit_librador` — puede no saberse, y entonces queda **vacío** |
+| **Librador** | el que firmó el cheque | `cuit_librador` si está en el maestro, si no `librador_nombre` — puede no saberse, y entonces queda **vacío** |
 | **Cliente** | el que nos lo dio; es el que cancela factura | del recibo de cobranza (`pago_origen_id` → la entidad del pago) |
 | **Destino** | dónde termina | un **proveedor** (`endoso_entidad_id`) o un **banco** (`deposito_cuenta_id`) |
+
+El **emitido** tiene un rol solo: el **beneficiario** (`beneficiario_entidad_id`),
+a quien se lo damos. Si nace dentro de un pago, es la entidad de ese pago.
 
 ⚠ **El librador no se rellena con el CUIT del cliente.** Hasta el 31/08 el alta
 lo hacía: si no se cargaba librador, guardaba el del cliente. Eso afirma que el
 cliente firmó el cheque, cuando puede haberlo recibido de un tercero — y nadie
 se enteraría. Si no se sabe, se deja vacío; el cliente ya está en el recibo.
+En la pantalla hay un tilde *"lo firmó el mismo cliente"* que **arranca
+destildado**: copiarlo tiene que ser un acto de alguien, no un default.
+
+**Cómo se cargan** (02/09). El módulo tiene los dos botones —`+ Cheque recibido`
+y `+ Cheque emitido`— pero no son simétricos por dentro:
+
+- el **emitido** se da de alta derecho contra `POST /api/c/cheques`;
+- el **recibido** arma una **cobranza** (`POST /api/c/pagos`, dirección cobro,
+  medio cheque). O sea: el botón es nuevo, la puerta es la misma de siempre. Un
+  cheque recibido suelto sería plata en cartera sin dueño, y el endpoint de
+  cheques lo sigue rechazando con 400.
+
+El formulario del recibido ofrece las facturas impagas de ese cliente y propone
+el importe con lo que suman las tildadas; si no se tilda ninguna, la cobranza
+queda **a cuenta** y se imputa después por FIFO.
+
+**Depositar y endosar** se eligen de una lista, no se escriben. Es la misma
+corrección que el ERP ya hizo: con `prompt()` había que transcribir el número de
+cuenta o la razón social, y así se cargan cuentas y entidades repetidas.
+
+### Pagos: se cancelan FACTURAS, y nada más
+
+El comprobante tiene una dirección (un **pago** cancela compras, una **cobranza**
+cancela ventas) y se arma con tres medios: efectivo, un movimiento del banco, o
+un cheque —de cartera para endosar, o uno nuevo que se emite ahí mismo—.
+
+Del ERP no viene nada del circuito de obra: **no hay certificados, ni órdenes de
+compra, ni imputación por obra**. Se elige la entidad, se tildan sus facturas
+impagas y listo. Los centros de costo, cuando se usen, cuelgan de la factura
+(§ arriba), no del pago.
+
+Los dos botones del módulo —`+ Nuevo pago` y `+ Nueva cobranza`— fijan la
+dirección al abrir. Antes se abría un panel y había que acordarse de tildar la
+pestaña: quedaban cobranzas cargadas como pagos.
+
+Lo que se paga por banco deja el movimiento con el CUIT de la contraparte, el
+número de recibo y conciliado — es el "el banco se va nutriendo" del pedido
+original.
 
 ### Tarjetas: todavía no
 El módulo no existe y no está previsto por ahora.
