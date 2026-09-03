@@ -245,6 +245,74 @@ CREATE TABLE pago_aplicaciones (
     UNIQUE (pago_id, factura_id)
 );
 
+-- ══ 8. PERCEPCIONES Y RETENCIONES ═══════════════════════════════════════════
+-- Traído del ERP (`comprobante_tributos` y `retenciones_sufridas`), donde el
+-- modelo ya estaba resuelto contra las pantallas de Xubio.
+--
+-- ⚠ NO ES LO MISMO UNA PERCEPCIÓN QUE UNA RETENCIÓN, y no se recuperan igual:
+--   PERCEPCIÓN  te la COBRAN de más en una factura. Viene en el comprobante.
+--   RETENCIÓN   te la DESCUENTAN del pago. Viene en el recibo, con certificado.
+--
+-- ⚠ Y NO ES LO MISMO percepción de IVA que de IIBB: la primera es crédito en la
+-- DJ de IVA, la segunda en la de IIBB. Sumarlas en un solo campo —como estaba
+-- hasta el 03/09— hace que la posición de IVA reste cosas que no le tocan.
+
+-- El desglose de una factura. `facturas.percepciones` sigue siendo el TOTAL que
+-- trae el comprobante (lo que ARCA llama «Otros Tributos»); acá se dice de qué
+-- es cada peso. Lo que no está clasificado no se computa en ninguna DJ, y la
+-- pantalla lo muestra como hueco.
+CREATE TABLE factura_tributos (
+    id           INTEGER PRIMARY KEY,
+    factura_id   INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+    tipo         TEXT NOT NULL,   -- ver TRIBUTOS en server.py
+    jurisdiccion TEXT,            -- la provincia o el municipio, cuando aplica
+    base         REAL,            -- sobre qué se calculó, si se sabe
+    alicuota     REAL,
+    monto        REAL NOT NULL,
+    detalle      TEXT
+);
+CREATE INDEX ix_facttrib ON factura_tributos(factura_id);
+
+-- Las retenciones, colgadas del recibo.
+--
+-- ⚠ EL AGUJERO QUE ESTO TAPA (relevado en el ERP, caso Exponenciar): una
+-- factura de $12.717.601 se cobra con $12.488.762 en el banco. Los $228.839 de
+-- diferencia no son un descuento: son plata que el cliente le pagó al fisco en
+-- nombre nuestro. Sin registrarla, la factura queda impaga por ese resto para
+-- siempre y la cuenta corriente miente.
+--
+--     importe aplicado a las facturas = medios de pago + retenciones
+--
+-- Las dos direcciones NO son simétricas contablemente:
+--   'sufrida'    en un COBRO: nos retuvieron. Es CRÉDITO fiscal, va a la DJ.
+--   'practicada' en un PAGO: retuvimos al proveedor. Es un PASIVO — esa plata
+--                no es del cliente, hay que depositarla y darle el certificado.
+CREATE TABLE retenciones (
+    id             INTEGER PRIMARY KEY,
+    cliente_id     INTEGER NOT NULL REFERENCES clientes(id),
+    pago_id        INTEGER REFERENCES pagos(id) ON DELETE CASCADE,
+    direccion      TEXT NOT NULL DEFAULT 'sufrida',
+    entidad_id     INTEGER REFERENCES entidades_cliente(id),
+    fecha          TEXT,
+    tipo           TEXT NOT NULL,
+    -- El RÉGIMEN dentro del tipo es lo que define la alícuota y el mínimo. En
+    -- un certificado: «094 Gcias.: locaciones de obras». Sin esto, "retención
+    -- de ganancias" no dice si el 2% estaba bien.
+    codigo_regimen TEXT,
+    concepto       TEXT,
+    jurisdiccion   TEXT,
+    -- El importe SUJETO a retención: no es el total de la factura ni el neto,
+    -- es el neto menos el mínimo no imponible del régimen.
+    base           REAL,
+    alicuota       REAL,
+    monto          REAL NOT NULL,
+    certificado    TEXT,          -- sin este número no se computa en la DJ
+    computada      INTEGER NOT NULL DEFAULT 0,
+    detalle        TEXT
+);
+CREATE INDEX ix_reten_cliente ON retenciones(cliente_id, fecha);
+CREATE INDEX ix_reten_pago ON retenciones(pago_id);
+
 -- ══ 8. CONCILIACIÓN ═════════════════════════════════════════════════════════
 -- Juan: "que lo que se pueda conciliar solo lo haga: cheques con movimiento
 -- de banco, y facturas que coincidan monto, entorno de fecha y CUIT".

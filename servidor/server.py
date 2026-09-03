@@ -204,6 +204,39 @@ def _migrar(con):
                 actualizado TEXT NOT NULL);""")
         con.commit()
 
+    # ── percepciones discriminadas y retenciones ──
+    if "retenciones" not in tablas:
+        print("  migrando: percepciones por tipo y retenciones del recibo…")
+        con.executescript("""
+            CREATE TABLE factura_tributos (
+                id INTEGER PRIMARY KEY,
+                factura_id INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+                tipo TEXT NOT NULL, jurisdiccion TEXT,
+                base REAL, alicuota REAL, monto REAL NOT NULL, detalle TEXT);
+            CREATE INDEX ix_facttrib ON factura_tributos(factura_id);
+            CREATE TABLE retenciones (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                pago_id INTEGER REFERENCES pagos(id) ON DELETE CASCADE,
+                direccion TEXT NOT NULL DEFAULT 'sufrida',
+                entidad_id INTEGER REFERENCES entidades_cliente(id),
+                fecha TEXT, tipo TEXT NOT NULL, codigo_regimen TEXT, concepto TEXT,
+                jurisdiccion TEXT, base REAL, alicuota REAL, monto REAL NOT NULL,
+                certificado TEXT, computada INTEGER NOT NULL DEFAULT 0, detalle TEXT);
+            CREATE INDEX ix_reten_cliente ON retenciones(cliente_id, fecha);
+            CREATE INDEX ix_reten_pago ON retenciones(pago_id);""")
+        # Lo que ya estaba cargado entra como SIN CLASIFICAR y no computa en
+        # ninguna DJ. Es lo honesto: «Otros Tributos» de ARCA es una sola
+        # columna que mezcla percepción de IVA, de IIBB y tasas municipales, y
+        # hasta hoy la posición de IVA restaba todo como si fuera crédito de
+        # IVA. Restar de menos es peor que no restar.
+        con.execute(
+            "INSERT INTO factura_tributos (factura_id, tipo, monto, detalle) "
+            "SELECT id, 'sin_clasificar', percepciones, "
+            "  'Otros Tributos del export de ARCA — hay que decir de qué es' "
+            "FROM facturas WHERE ABS(COALESCE(percepciones,0)) > 0.009")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -527,8 +560,12 @@ def api_facturas():
     if err:
         con.close()
         return err
+    # `tributos_clasificados` es 0 mientras quede algo en «sin_clasificar»: eso
+    # es plata que no computa en ninguna DJ y la pantalla lo muestra como hueco.
     q = ("SELECT f.*, m.razon_social AS entidad, e.cuit AS entidad_cuit, "
-         "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS pagado "
+         "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) AS pagado, "
+         "  (SELECT COUNT(*) = 0 FROM factura_tributos t WHERE t.factura_id=f.id "
+         "     AND t.tipo='sin_clasificar') AS tributos_clasificados "
          "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
          "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE f.cliente_id=?")
     args = [cli["id"]]
@@ -892,7 +929,9 @@ def api_pagos():
         con.close()
         return err
     r = filas(con.execute(
-        "SELECT p.*, m.razon_social AS entidad FROM pagos p "
+        "SELECT p.*, m.razon_social AS entidad, "
+        "  COALESCE((SELECT SUM(x.monto) FROM retenciones x WHERE x.pago_id=p.id),0) AS retenido "
+        "FROM pagos p "
         "JOIN entidades_cliente e ON e.id=p.entidad_id JOIN maestro_entidades m ON m.cuit=e.cuit "
         "WHERE p.cliente_id=? ORDER BY p.fecha DESC, p.id DESC", (cli["id"],)))
     for p in r:
@@ -959,22 +998,58 @@ def api_pagos_alta():
             con.close()
             return jsonify({"error": f"un {b['direccion']} solo cancela {esperado}s"}), 400
 
+    # ── LA ECUACIÓN COMPLETA (traída del ERP, 03/09) ─────────────────────────
+    #     importe aplicado a las facturas = medios de pago + retenciones
+    #
+    # Sin la segunda pata, una factura cobrada con retención queda impaga por
+    # la diferencia PARA SIEMPRE y la cuenta corriente miente. La retención no
+    # es un descuento: es plata que la contraparte le pagó al fisco en nombre
+    # del cliente, y que después se computa en la DJ.
+    retenciones = b.get("retenciones") or []
+    for x in retenciones:
+        if x.get("tipo") not in TRIBUTOS_VALIDOS:
+            con.close()
+            return jsonify({"error": f"concepto de retención desconocido: {x.get('tipo')}"}), 400
+        if _n(x.get("monto")) <= 0:
+            con.close()
+            return jsonify({"error": "la retención tiene que ser mayor que cero"}), 400
     total_medios = round(sum(_n(m.get("importe")) for m in medios), 2)
+    total_ret = round(sum(_n(x.get("monto")) for x in retenciones), 2)
     total_aplic = round(sum(_n(a.get("importe")) for a in aplicaciones), 2)
-    if aplicaciones and abs(total_medios - total_aplic) > 0.01:
+    if aplicaciones and abs(total_medios + total_ret - total_aplic) > 0.01:
         con.close()
-        return jsonify({"error": f"los medios suman {total_medios} y las facturas {total_aplic}"}), 400
+        return jsonify({"error": f"los medios suman {total_medios}"
+                                 + (f" más {total_ret} de retenciones" if total_ret else "")
+                                 + f" y las facturas {total_aplic}"}), 400
 
     fecha = (b.get("fecha") or _hoy())[:10]
     cur = con.execute(
         "INSERT INTO pagos (cliente_id, entidad_id, direccion, fecha, numero, total, nota) "
         "VALUES (?,?,?,?,?,?,?)",
-        (cid, ent["id"], b["direccion"], fecha, b.get("numero"), total_medios, b.get("nota")))
+        # El TOTAL del comprobante es lo que cancela: medios + retenciones. Si
+        # guardara solo los medios, el recibo diría menos de lo que la factura
+        # dio por pagado.
+        (cid, ent["id"], b["direccion"], fecha, b.get("numero"),
+         round(total_medios + total_ret, 2), b.get("nota")))
     pago_id = cur.lastrowid
 
     for a in aplicaciones:
         con.execute("INSERT INTO pago_aplicaciones (pago_id, factura_id, importe) VALUES (?,?,?)",
                     (pago_id, a["factura_id"], _n(a.get("importe"))))
+
+    # La dirección de la retención sale del comprobante, no se elige: en un
+    # COBRO nos retuvieron (crédito fiscal); en un PAGO retuvimos al proveedor
+    # (pasivo: esa plata hay que depositarla y darle el certificado).
+    direccion_ret = "sufrida" if b["direccion"] == "cobro" else "practicada"
+    for x in retenciones:
+        con.execute(
+            "INSERT INTO retenciones (cliente_id, pago_id, direccion, entidad_id, fecha, "
+            " tipo, codigo_regimen, concepto, jurisdiccion, base, alicuota, monto, "
+            " certificado, detalle) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cid, pago_id, direccion_ret, ent["id"], x.get("fecha") or fecha,
+             x["tipo"], x.get("codigo_regimen"), x.get("concepto"), x.get("jurisdiccion"),
+             _n(x.get("base")) or None, _n(x.get("alicuota")) or None,
+             _n(x.get("monto")), x.get("certificado"), x.get("detalle")))
 
     for m in medios:
         medio, imp = m.get("medio"), _n(m.get("importe"))
@@ -1060,6 +1135,182 @@ def api_pagos_alta():
     con.commit()
     con.close()
     return jsonify({"ok": True, "id": pago_id})
+
+
+@app.get("/api/c/facturas/<int:fid>/tributos")
+def api_factura_tributos(fid):
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "facturas", fid, cli["id"]):
+        con.close()
+        return jsonify({"error": "factura inexistente para este cliente"}), 404
+    r = filas(con.execute(
+        "SELECT id, tipo, jurisdiccion, base, alicuota, monto, detalle "
+        "FROM factura_tributos WHERE factura_id=? ORDER BY id", (fid,)))
+    f = con.execute("SELECT percepciones FROM facturas WHERE id=?", (fid,)).fetchone()
+    con.close()
+    total = round(sum(_n(x["monto"]) for x in r), 2)
+    declarado = _n(f["percepciones"])
+    return jsonify({
+        "tributos": r, "total_desglosado": total, "total_comprobante": declarado,
+        # Si el desglose no da lo que dice el papel, falta o sobra algo. Se
+        # informa en vez de bloquear: puede ser un tributo que ARCA no manda.
+        "cierra": abs(total - declarado) < 0.01,
+        "diferencia": round(declarado - total, 2),
+    })
+
+
+@app.post("/api/c/facturas/<int:fid>/tributos")
+def api_factura_tributos_set(fid):
+    """Reemplaza el desglose de una factura.
+
+    Body: {tributos:[{tipo, monto, jurisdiccion?, base?, alicuota?, detalle?}]}
+
+    `facturas.percepciones` sigue siendo el TOTAL que trae el comprobante y no
+    se toca: acá se dice DE QUÉ es cada peso. Lo que queda sin clasificar no
+    computa en ninguna DJ."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "facturas", fid, cli["id"]):
+        con.close()
+        return jsonify({"error": "factura inexistente para este cliente"}), 404
+    b = request.get_json(force=True)
+    lineas = b.get("tributos") or []
+    for x in lineas:
+        if x.get("tipo") not in TRIBUTOS_VALIDOS:
+            con.close()
+            return jsonify({"error": f"concepto desconocido: {x.get('tipo')}"}), 400
+        if _n(x.get("monto")) == 0:
+            con.close()
+            return jsonify({"error": "un tributo en cero no se guarda"}), 400
+    con.execute("DELETE FROM factura_tributos WHERE factura_id=?", (fid,))
+    for x in lineas:
+        con.execute(
+            "INSERT INTO factura_tributos (factura_id, tipo, jurisdiccion, base, alicuota, "
+            " monto, detalle) VALUES (?,?,?,?,?,?,?)",
+            (fid, x["tipo"], x.get("jurisdiccion"),
+             _n(x.get("base")) or None, _n(x.get("alicuota")) or None,
+             _n(x.get("monto")), x.get("detalle")))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "lineas": len(lineas)})
+
+
+@app.get("/api/c/pagos/<int:pid>/retenciones")
+def api_pago_retenciones(pid):
+    """Las retenciones del recibo, y si la ecuación cierra.
+
+    ⚠ EL AGUJERO QUE ESTO TAPA (relevado en el ERP): una factura de
+    $12.717.601 se cobra con $12.488.762 en el banco. Los $228.839 de
+    diferencia no son un descuento ni una factura mal emitida: son plata que el
+    cliente le pagó al fisco en nombre nuestro y que después se computa en la
+    DJ. Sin registrarla, la factura queda impaga por ese resto para siempre.
+
+        importe aplicado a las facturas = medios de pago + retenciones
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    pg = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not pg:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    r = filas(con.execute(
+        "SELECT id, direccion, tipo, codigo_regimen, concepto, jurisdiccion, base, "
+        "  alicuota, monto, certificado, computada, fecha "
+        "FROM retenciones WHERE pago_id=? ORDER BY id", (pid,)))
+    medios = _n(con.execute("SELECT COALESCE(SUM(importe),0) FROM pago_medios WHERE pago_id=?",
+                            (pid,)).fetchone()[0])
+    aplicado = _n(con.execute("SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones "
+                              "WHERE pago_id=?", (pid,)).fetchone()[0])
+    con.close()
+    ret = round(sum(_n(x["monto"]) for x in r), 2)
+    return jsonify({
+        "retenciones": r, "total_retenido": ret,
+        "medios_de_pago": medios, "imputado_a_facturas": aplicado,
+        # Si no da, se dice cuánto falta en vez de dejar la factura media paga
+        # sin explicación.
+        "cierra": abs((medios + ret) - aplicado) < 0.01 or aplicado == 0,
+        "diferencia": round(aplicado - (medios + ret), 2),
+    })
+
+
+@app.post("/api/c/pagos/<int:pid>/retenciones")
+def api_pago_retenciones_set(pid):
+    """Reemplaza las retenciones del recibo.
+
+    La dirección sale del comprobante y NO se elige: en un COBRO nos retuvieron
+    (sufrida, es crédito fiscal); en un PAGO retuvimos al proveedor
+    (practicada, es un pasivo — esa plata no es del cliente, hay que
+    depositarla y darle el certificado)."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    pg = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not pg:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    b = request.get_json(force=True)
+    lineas = b.get("retenciones") or []
+    for x in lineas:
+        if x.get("tipo") not in TRIBUTOS_VALIDOS:
+            con.close()
+            return jsonify({"error": f"concepto desconocido: {x.get('tipo')}"}), 400
+        if _n(x.get("monto")) <= 0:
+            con.close()
+            return jsonify({"error": "la retención tiene que ser mayor que cero"}), 400
+    direccion = "sufrida" if pg["direccion"] == "cobro" else "practicada"
+    con.execute("DELETE FROM retenciones WHERE pago_id=?", (pid,))
+    for x in lineas:
+        con.execute(
+            "INSERT INTO retenciones (cliente_id, pago_id, direccion, entidad_id, fecha, "
+            " tipo, codigo_regimen, concepto, jurisdiccion, base, alicuota, monto, "
+            " certificado, detalle) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cli["id"], pid, direccion, pg["entidad_id"], x.get("fecha") or pg["fecha"],
+             x["tipo"], x.get("codigo_regimen"), x.get("concepto"), x.get("jurisdiccion"),
+             _n(x.get("base")) or None, _n(x.get("alicuota")) or None,
+             _n(x.get("monto")), x.get("certificado"), x.get("detalle")))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "lineas": len(lineas)})
+
+
+@app.get("/api/c/retenciones")
+def api_retenciones():
+    """Todas las del cliente, para el informe y para ver qué falta computar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    q = ("SELECT r.*, m.razon_social AS entidad, p.numero AS recibo "
+         "FROM retenciones r "
+         "LEFT JOIN entidades_cliente e ON e.id=r.entidad_id "
+         "LEFT JOIN maestro_entidades m ON m.cuit=e.cuit "
+         "LEFT JOIN pagos p ON p.id=r.pago_id "
+         "WHERE r.cliente_id=?")
+    args = [cli["id"]]
+    if request.args.get("direccion") in ("sufrida", "practicada"):
+        q += " AND r.direccion=?"
+        args.append(request.args["direccion"])
+    r = filas(con.execute(q + " ORDER BY r.fecha DESC, r.id DESC", args))
+    con.close()
+    # Sin certificado no se puede computar en la DJ: es el número que vale ante
+    # ARCA, no el monto.
+    sin_cert = [x for x in r if not (x.get("certificado") or "").strip()]
+    return jsonify({"retenciones": r,
+                    "total": round(sum(_n(x["monto"]) for x in r), 2),
+                    "sin_certificado": len(sin_cert)})
 
 
 # ══ CONCILIACIÓN ════════════════════════════════════════════════════════════
@@ -1344,6 +1595,42 @@ def api_vencimientos_alta():
     return jsonify({"ok": True, "cargados": n})
 
 
+# ══ PERCEPCIONES Y RETENCIONES ══════════════════════════════════════════════
+# El catálogo, traído del ERP, para que la pantalla no invente nombres y el
+# informe pueda agrupar. Cada uno dice si es PERCEPCIÓN (te la cobran de más en
+# una factura) o RETENCIÓN (te la descuentan del pago) — no es lo mismo y no se
+# recuperan por la misma vía.
+#
+# ⚠ Y el TIPO decide contra qué DJ va: la percepción de IVA es crédito en la DJ
+# de IVA, la de IIBB en la de IIBB. Hasta el 03/09 acá había un solo campo
+# `facturas.percepciones` con todo adentro, y la posición de IVA lo restaba
+# entero — o sea, restaba de menos y mostraba menos impuesto del que hay.
+TRIBUTOS = [
+    ("percepcion_iva",       "Percepción IVA",        "percepcion", "iva"),
+    ("percepcion_iibb",      "Percepción IIBB",       "percepcion", "iibb"),
+    ("percepcion_ganancias", "Percepción Ganancias",  "percepcion", "ganancias"),
+    ("retencion_iva",        "Retención IVA",         "retencion",  "iva"),
+    ("retencion_iibb",       "Retención IIBB",        "retencion",  "iibb"),
+    ("retencion_ganancias",  "Retención Ganancias",   "retencion",  "ganancias"),
+    ("retencion_suss",       "Retención SUSS",        "retencion",  "suss"),
+    ("tasa_municipal",       "Tasa municipal",        "tributo",    None),
+    ("impuesto_interno",     "Impuesto interno",      "tributo",    None),
+    ("sin_clasificar",       "Sin clasificar",        "tributo",    None),
+    ("otro",                 "Otro",                  "tributo",    None),
+]
+TRIBUTOS_VALIDOS = {t[0] for t in TRIBUTOS}
+# Los que son crédito computable en cada DJ.
+CREDITO_IVA = ("percepcion_iva", "retencion_iva")
+CREDITO_IIBB = ("percepcion_iibb", "retencion_iibb")
+
+
+@app.get("/api/tributos")
+def api_tributos():
+    """El catálogo. Es público: no tiene datos de nadie."""
+    return jsonify([{"codigo": c, "nombre": n, "clase": k, "impuesto": i}
+                    for c, n, k, i in TRIBUTOS])
+
+
 def _liquidar_mes(con, cid, periodo):
     """Lo que el mes genera por sí solo, sin arrastre."""
     desde, hasta = _rango_periodo(periodo)
@@ -1383,10 +1670,36 @@ def _cadena_iva(con, cid):
         "SELECT substr(fecha,1,7) AS mes, "
         "  ROUND(SUM(CASE WHEN mov='venta'  THEN iva ELSE 0 END),2) AS debito, "
         "  ROUND(SUM(CASE WHEN mov='compra' THEN iva ELSE 0 END),2) AS credito, "
-        "  ROUND(SUM(CASE WHEN mov='compra' THEN percepciones ELSE 0 END),2) AS percep_fact, "
         "  SUM(CASE WHEN mov='venta'  THEN 1 ELSE 0 END) AS ventas, "
         "  SUM(CASE WHEN mov='compra' THEN 1 ELSE 0 END) AS compras "
         "FROM facturas WHERE cliente_id=? GROUP BY 1", (cid,))}
+
+    # ⚠ SOLO LA PERCEPCIÓN DE **IVA** ES CRÉDITO ACÁ (corregido 03/09). Antes
+    # se restaba `facturas.percepciones` entero, que es la columna «Otros
+    # Tributos» de ARCA — ahí adentro hay percepción de IIBB, tasas municipales
+    # e impuestos internos, que van contra otra DJ o contra ninguna. Restarlos
+    # del IVA muestra MENOS impuesto del que hay, que es el error peligroso.
+    marcas = ",".join("?" * len(CREDITO_IVA))
+    percep_fact = {r["mes"]: _n(r["monto"]) for r in con.execute(
+        f"SELECT substr(f.fecha,1,7) AS mes, ROUND(SUM(t.monto),2) AS monto "
+        f"FROM factura_tributos t JOIN facturas f ON f.id=t.factura_id "
+        f"WHERE f.cliente_id=? AND f.mov='compra' AND t.tipo IN ({marcas}) "
+        f"GROUP BY 1", (cid, *CREDITO_IVA))}
+
+    # La retención de IVA que nos hicieron al cobrarnos. Es crédito igual que
+    # la percepción, pero entra por el RECIBO y no por la factura.
+    reten = {r["mes"]: _n(r["monto"]) for r in con.execute(
+        "SELECT substr(COALESCE(r.fecha, p.fecha),1,7) AS mes, ROUND(SUM(r.monto),2) AS monto "
+        "FROM retenciones r LEFT JOIN pagos p ON p.id=r.pago_id "
+        "WHERE r.cliente_id=? AND r.direccion='sufrida' AND r.tipo='retencion_iva' "
+        "GROUP BY 1", (cid,))}
+
+    # Lo que nadie clasificó todavía. NO computa —no se sabe de qué es— pero se
+    # informa, porque puede haber crédito de IVA escondido ahí.
+    sin_clas = {r["mes"]: _n(r["monto"]) for r in con.execute(
+        "SELECT substr(f.fecha,1,7) AS mes, ROUND(SUM(t.monto),2) AS monto "
+        "FROM factura_tributos t JOIN facturas f ON f.id=t.factura_id "
+        "WHERE f.cliente_id=? AND t.tipo='sin_clasificar' GROUP BY 1", (cid,))}
 
     # La percepción de IVA que cobra el BANCO no está en ninguna factura: se la
     # debita a la cuenta. En el ERP sale del resumen bancario y es plata que
@@ -1409,7 +1722,8 @@ def _cadena_iva(con, cid):
     saldo = _n(ini["a_favor"]) if ini else 0.0
     arranque = f"{ini['periodo'][3:]}-{ini['periodo'][:2]}" if ini else None
 
-    meses = sorted(set(porm) | set(banco) | ({arranque} if arranque else set()))
+    meses = sorted(set(porm) | set(banco) | set(reten)
+                   | ({arranque} if arranque else set()))
     if arranque:
         meses = [m for m in meses if m >= arranque]
 
@@ -1418,7 +1732,8 @@ def _cadena_iva(con, cid):
         d = porm.get(mes)
         debito = _n(d["debito"]) if d else 0.0
         credito = _n(d["credito"]) if d else 0.0
-        percep = round((_n(d["percep_fact"]) if d else 0.0) + banco.get(mes, 0.0), 2)
+        percep = round(percep_fact.get(mes, 0.0) + reten.get(mes, 0.0)
+                       + banco.get(mes, 0.0), 2)
         posicion = round(debito - credito - percep, 2)
         anterior, a_pagar = saldo, 0.0
         if posicion <= 0:
@@ -1430,6 +1745,8 @@ def _cadena_iva(con, cid):
         serie.append({
             "periodo": mes, "debito": debito, "credito": credito,
             "percepciones": percep, "percepciones_banco": banco.get(mes, 0.0),
+            "retenciones_iva": reten.get(mes, 0.0),
+            "sin_clasificar": sin_clas.get(mes, 0.0),
             "posicion": posicion, "saldo_favor_anterior": round(anterior, 2),
             "a_pagar": a_pagar, "saldo_favor_final": saldo,
             "ventas": (d["ventas"] if d else 0) or 0,
@@ -1585,11 +1902,43 @@ def api_dj_base():
         "SELECT COALESCE(SUM(total),0) FROM facturas WHERE cliente_id=? AND mov='venta' "
         "AND fecha BETWEEN ? AND ?", (cli["id"], desde, hasta)).fetchone()[0])
     suma_bases = round(sum(b["base"] for b in bases), 2)
+    determinado = round(sum(b["impuesto"] for b in bases), 2)
+
+    # ── LAS DEDUCCIONES DE IIBB (03/09) ──────────────────────────────────────
+    # El impuesto determinado NO es lo que se paga: primero se descuentan las
+    # percepciones y retenciones de IIBB. Son las MISMAS tablas que las de IVA
+    # pero con el tipo de IIBB — mezclarlas era el error que corregimos: cada
+    # tributo va contra la DJ de SU impuesto.
+    marcas = ",".join("?" * len(CREDITO_IIBB))
+    perc_iibb = _n(con.execute(
+        f"SELECT COALESCE(SUM(t.monto),0) FROM factura_tributos t "
+        f"JOIN facturas f ON f.id=t.factura_id "
+        f"WHERE f.cliente_id=? AND f.fecha BETWEEN ? AND ? AND t.tipo IN ({marcas})",
+        (cli["id"], desde, hasta, *CREDITO_IIBB)).fetchone()[0])
+    ret_iibb = _n(con.execute(
+        "SELECT COALESCE(SUM(r.monto),0) FROM retenciones r LEFT JOIN pagos p ON p.id=r.pago_id "
+        "WHERE r.cliente_id=? AND r.direccion='sufrida' AND r.tipo='retencion_iibb' "
+        "AND COALESCE(r.fecha, p.fecha) BETWEEN ? AND ?",
+        (cli["id"], desde, hasta)).fetchone()[0])
+    # Lo que nadie clasificó: no se descuenta —no se sabe de qué es— pero se
+    # avisa, porque puede haber percepción de IIBB escondida ahí.
+    sin_clas = _n(con.execute(
+        "SELECT COALESCE(SUM(t.monto),0) FROM factura_tributos t "
+        "JOIN facturas f ON f.id=t.factura_id "
+        "WHERE f.cliente_id=? AND f.fecha BETWEEN ? AND ? AND t.tipo='sin_clasificar'",
+        (cli["id"], desde, hasta)).fetchone()[0])
+    deducciones = round(perc_iibb + ret_iibb, 2)
+    saldo = round(determinado - deducciones, 2)
     con.close()
     return jsonify({
         "periodo": request.args["periodo"], "jurisdiccion": jur,
         "bases": bases,
-        "impuesto_determinado": round(sum(b["impuesto"] for b in bases), 2),
+        "impuesto_determinado": determinado,
+        "percepciones_iibb": perc_iibb, "retenciones_iibb": ret_iibb,
+        "deducciones": deducciones,
+        "saldo": abs(saldo),
+        "resultado": "a pagar" if saldo > 0 else ("a favor" if saldo < 0 else "en cero"),
+        "sin_clasificar": sin_clas,
         "total_ventas": total_ventas, "suma_bases": suma_bases,
         "control_ok": abs(suma_bases - total_ventas) < 0.01,
         "diferencia": round(total_ventas - suma_bases, 2),

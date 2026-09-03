@@ -793,7 +793,7 @@ async function fLista(){
       Mientras estén así la DJ de IIBB no cierra: asignáselas en la columna Actividad.</div>` : ''}
     ${fs.length ? `<div class="panel"><div class="panel-h"><b>${fs.length} comprobante(s)</b>
       <span class="mini">Total ${plata(fs.reduce((s,f) => s+f.total, 0))}</span></div>
-      ${tabla(['Fecha', esVenta?'Cliente':'Proveedor','Comprobante', esVenta?'Actividad IIBB':'', 'Neto','IVA','Total','Saldo'],
+      ${tabla(['Fecha', esVenta?'Cliente':'Proveedor','Comprobante', esVenta?'Actividad IIBB':'Tributos', 'Neto','IVA','Total','Saldo'],
         fs.map(f => [fecha(f.fecha), esc(f.entidad),
           `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
           // El par actividad+alícuota se elige y se CORRIGE acá, que es donde
@@ -804,7 +804,13 @@ async function fLista(){
             ${ACT.map((a,i) => `<option value="${i}"${
               f.iibb_codigo === a.codigo && f.iibb_alicuota === a.alicuota ? ' selected' : ''
             }>${esc(a.codigo)} · ${a.alicuota}%</option>`).join('')}
-          </select>` : '',
+          </select>`
+          // En compras, el botón para decir DE QUÉ son los otros tributos. Sin
+          // clasificar no computan en ninguna DJ, así que se ve el hueco.
+          : (Math.abs(f.percepciones||0) > 0.009
+            ? `<button class="g xs" onclick="verTributos(${f.id}, '${esc(f.tipo)} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}')">
+                 ${plata(f.percepciones)} ${f.tributos_clasificados ? '' : '· sin clasificar'}</button>`
+            : '<span class="mini">—</span>'),
           {n:plata(f.neto)}, {n:plata(f.iva)}, {n:plata(f.total)},
           {n: f.saldo > 0.01 ? `<span class="neg">${plata(f.saldo)}</span>`
             : '<span class="badge b-ok">saldada</span>'}]))}
@@ -963,6 +969,13 @@ async function fPosicion(){
         <div class="v sm">${p.inicial ? esc(p.inicial.periodo) : ((p.serie[p.serie.length-1]||{}).periodo || '—')}</div>
         <div class="mini">${p.inicial ? 'con ' + plata(p.inicial.a_favor) + ' a favor' : 'sin saldo declarado'}</div></div>
     </div>
+    ${(() => { const sc = p.serie.reduce((s,f) => s + (f.sin_clasificar||0), 0);
+      return sc > 0.01 ? `<div class="aviso" style="margin-top:16px;border-left-color:var(--bad)">
+        <b>${plata(sc)} en tributos sin clasificar.</b> Es la columna «Otros Tributos» del
+        export de ARCA: ahí adentro puede haber percepción de IVA, de IIBB o tasas municipales,
+        y cada una va contra una DJ distinta. Mientras no se diga de qué es, <b>no se computa
+        en ninguna</b> — que es lo honesto: restarla del IVA sin saber mostraba menos impuesto
+        del que hay. Se clasifica en <a href="#facturas">Facturas → Compras</a>.</div>` : ''; })()}
     <div class="aviso" style="margin-top:16px;border-left-color:var(--bad)">
       <b>Falta un dato que ningún comprobante trae.</b> ${esc(p.falta)}</div>
     <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Acumulado a favor y posición de cada mes</b></div>
@@ -1396,12 +1409,14 @@ async function vPagos(){
       </div>
     </div>
     ${ps.length ? `<div class="panel"><div class="panel-h"><b>${ps.length} comprobante(s)</b></div>
-      ${tabla(['Fecha','Tipo','Entidad','Nº','Medios','Aplica a','Total'],
+      ${tabla(['Fecha','Tipo','Entidad','Nº','Medios','Aplica a','Retenciones','Total'],
         ps.map(p => [fecha(p.fecha),
           p.direccion === 'cobro' ? '<span class="badge b-ok">cobranza</span>' : '<span class="badge b-warn">pago</span>',
           esc(p.entidad), esc(p.numero||'—'),
           `<span class="mini">${p.medios.map(m => esc(m.medio)).join(', ')}</span>`,
           `<span class="mini">${p.aplicaciones.map(a => `${esc(a.tipo)} ${esc(a.numero||a.factura_id)}`).join(', ') || '—'}</span>`,
+          `<button class="g xs" onclick="verRetenciones(${p.id}, '${esc(p.numero||('recibo '+p.id))}')">${
+            p.retenido ? plata(p.retenido) : 'cargar'}</button>`,
           {n:plata(p.total)}]))}
     </div>` : '<div class="panel"><div class="vacio">Sin pagos ni cobranzas.</div></div>'}`);
 }
@@ -1501,6 +1516,156 @@ async function guardarPago(){
     await post('/api/c/pagos', {direccion:pDir, entidad_id:+val('np-ent'), fecha:val('np-fecha'),
       numero:val('np-num'), aplicaciones, medios});
     toast('Comprobante guardado — el banco quedó actualizado'); pMedios = []; vPagos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ══ PERCEPCIONES Y RETENCIONES ══
+   El catálogo se pide una vez y queda: es público y no cambia. */
+let TRIB = [];
+async function catTributos(){
+  if (!TRIB.length) TRIB = await api('/api/tributos').catch(() => []);
+  return TRIB;
+}
+const nombreTrib = c => (TRIB.find(t => t.codigo === c) || {}).nombre || c;
+
+/* ── El desglose de una factura ──
+   `percepciones` es el TOTAL que trae el comprobante (la columna «Otros
+   Tributos» de ARCA). Acá se dice DE QUÉ es cada peso, porque de eso depende
+   contra qué DJ se computa: la percepción de IVA es crédito en la de IVA, la
+   de IIBB en la de IIBB. Lo que queda sin clasificar no computa en ninguna. */
+let TF = [];
+async function verTributos(fid, etiqueta){
+  await catTributos();
+  const d = await api(`/api/c/facturas/${fid}/tributos`);
+  TF = d.tributos.map(t => ({...t}));
+  if (!TF.length && d.total_comprobante)
+    TF = [{tipo:'sin_clasificar', monto:d.total_comprobante}];
+  abrirTributos(fid, etiqueta, d);
+}
+function abrirTributos(fid, etiqueta, d){
+  const viejo = $('#modal-trib'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-trib';
+  el.innerHTML = `<div class="box" style="max-width:720px">
+    <h3>Tributos de ${esc(etiqueta)}</h3>
+    <div class="mini" style="margin-bottom:10px">El comprobante dice
+      <b>${plata(d.total_comprobante)}</b> en otros tributos. Decí de qué es cada peso:
+      la percepción de <b>IVA</b> es crédito en la DJ de IVA, la de <b>IIBB</b> en la de IIBB.
+      Lo que quede sin clasificar no se computa en ninguna.</div>
+    <div id="tf-lista"></div>
+    <div class="row-act" style="margin-top:10px">
+      <button class="g xs" onclick="tfAgregar()">+ Tributo</button>
+      <span class="mini" id="tf-suma" style="margin-left:8px"></span></div>
+    <div class="row-act" style="justify-content:flex-end;margin-top:16px">
+      <button class="g" onclick="$('#modal-trib').remove()">Cancelar</button>
+      <button onclick="tfGuardar(${fid})">Guardar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+  tfPintar(d.total_comprobante);
+}
+function tfPintar(declarado){
+  const c = $('#tf-lista'); if (!c) return;
+  c.innerHTML = TF.map((t,i) => `
+    <div class="cand" style="display:block">
+      <div class="f">
+        <div class="full"><label>Concepto</label>
+          <select onchange="TF[${i}].tipo=this.value;tfPintar(${declarado})">
+            ${TRIB.map(x => `<option value="${x.codigo}"${x.codigo===t.tipo?' selected':''}>${esc(x.nombre)}</option>`).join('')}
+          </select></div>
+        <div><label>Monto</label><input type="number" step="0.01" value="${t.monto ?? ''}"
+          oninput="TF[${i}].monto=parseFloat(this.value)||0;tfSuma(${declarado})"></div>
+        <div><label>Jurisdicción</label><input value="${esc(t.jurisdiccion||'')}"
+          oninput="TF[${i}].jurisdiccion=this.value" placeholder="Formosa"></div>
+        <div style="display:flex;align-items:flex-end">
+          <button class="g xs" onclick="TF.splice(${i},1);tfPintar(${declarado})">Quitar</button></div>
+      </div></div>`).join('') || '<div class="vacio">Sin tributos.</div>';
+  tfSuma(declarado);
+}
+function tfSuma(declarado){
+  const s = TF.reduce((a,t) => a + (parseFloat(t.monto)||0), 0);
+  const d = Math.round((declarado - s) * 100) / 100;
+  const el = $('#tf-suma'); if (!el) return;
+  el.innerHTML = `desglosado ${plata(s)} de ${plata(declarado)}`
+    + (Math.abs(d) < 0.01 ? ' · <b class="pos">cierra</b>'
+       : ` · <b class="neg">falta ${plata(d)}</b>`);
+}
+function tfAgregar(){ TF.push({tipo:'percepcion_iva', monto:0}); tfPintar(0); }
+async function tfGuardar(fid){
+  try{
+    await post(`/api/c/facturas/${fid}/tributos`,
+      {tributos: TF.filter(t => (parseFloat(t.monto)||0) !== 0)});
+    $('#modal-trib')?.remove();
+    toast('Tributos guardados — la posición de IVA se recalcula');
+    vFacturas();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ── Las retenciones de un recibo ──
+   La ecuación que faltaba: medios de pago + retenciones = imputado a las
+   facturas. Sin la segunda pata, una factura cobrada con retención queda
+   impaga por la diferencia para siempre. */
+let TR = [];
+async function verRetenciones(pid, etiqueta){
+  await catTributos();
+  const d = await api(`/api/c/pagos/${pid}/retenciones`);
+  TR = d.retenciones.map(r => ({...r}));
+  const viejo = $('#modal-ret'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-ret';
+  el.innerHTML = `<div class="box" style="max-width:760px">
+    <h3>Retenciones de ${esc(etiqueta)}</h3>
+    <div class="mini" id="tr-eco" style="margin-bottom:10px"></div>
+    <div id="tr-lista"></div>
+    <div class="row-act" style="margin-top:10px">
+      <button class="g xs" onclick="trAgregar()">+ Retención</button></div>
+    <div class="row-act" style="justify-content:flex-end;margin-top:16px">
+      <button class="g" onclick="$('#modal-ret').remove()">Cancelar</button>
+      <button onclick="trGuardar(${pid})">Guardar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+  trPintar(d);
+}
+function trPintar(d){
+  const c = $('#tr-lista'); if (!c) return;
+  const soloRet = TRIB.filter(t => t.clase === 'retencion');
+  c.innerHTML = TR.map((r,i) => `
+    <div class="cand" style="display:block">
+      <div class="f">
+        <div><label>Concepto</label>
+          <select onchange="TR[${i}].tipo=this.value">
+            ${soloRet.map(x => `<option value="${x.codigo}"${x.codigo===r.tipo?' selected':''}>${esc(x.nombre)}</option>`).join('')}
+          </select></div>
+        <div><label>Régimen</label><input value="${esc(r.codigo_regimen||'')}"
+          placeholder="094" oninput="TR[${i}].codigo_regimen=this.value"></div>
+        <div><label>Base (importe sujeto)</label><input type="number" step="0.01"
+          value="${r.base ?? ''}" oninput="TR[${i}].base=parseFloat(this.value)||null"></div>
+        <div><label>Monto retenido</label><input type="number" step="0.01" value="${r.monto ?? ''}"
+          oninput="TR[${i}].monto=parseFloat(this.value)||0;trEco(${d.medios_de_pago},${d.imputado_a_facturas})"></div>
+        <div><label>Nº certificado</label><input value="${esc(r.certificado||'')}"
+          oninput="TR[${i}].certificado=this.value" placeholder="sin esto no se computa"></div>
+        <div style="display:flex;align-items:flex-end">
+          <button class="g xs" onclick="TR.splice(${i},1);trPintar(${JSON.stringify(d).replace(/"/g,'&quot;')})">Quitar</button></div>
+      </div></div>`).join('') || '<div class="vacio">Sin retenciones.</div>';
+  trEco(d.medios_de_pago, d.imputado_a_facturas);
+}
+function trEco(medios, aplicado){
+  const s = TR.reduce((a,r) => a + (parseFloat(r.monto)||0), 0);
+  const dif = Math.round((aplicado - (medios + s)) * 100) / 100;
+  const el = $('#tr-eco'); if (!el) return;
+  el.innerHTML = `Medios de pago <b>${plata(medios)}</b> + retenciones <b>${plata(s)}</b>
+    = <b>${plata(medios + s)}</b> · imputado a facturas <b>${plata(aplicado)}</b>`
+    + (!aplicado ? ' <span class="mini">(a cuenta: no hay nada imputado)</span>'
+       : Math.abs(dif) < 0.01 ? ' · <b class="pos">cierra</b>'
+       : ` · <b class="neg">faltan ${plata(dif)}</b>`)
+    + '<br><span class="mini">Sin el número de certificado la retención no se puede computar en la DJ.</span>';
+}
+function trAgregar(){ TR.push({tipo:'retencion_iva', monto:0}); trPintar({medios_de_pago:0, imputado_a_facturas:0}); }
+async function trGuardar(pid){
+  try{
+    await post(`/api/c/pagos/${pid}/retenciones`,
+      {retenciones: TR.filter(r => (parseFloat(r.monto)||0) > 0)});
+    $('#modal-ret')?.remove();
+    toast('Retenciones guardadas'); vPagos();
   }catch(e){ toast(e.message, true); }
 }
 
