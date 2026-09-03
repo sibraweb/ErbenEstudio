@@ -132,6 +132,11 @@ CREATE TABLE cuentas_bancarias (
     id          INTEGER PRIMARY KEY,
     cliente_id  INTEGER NOT NULL REFERENCES clientes(id),
     banco       TEXT NOT NULL,
+    -- El código de entidad del BCRA: los 3 primeros dígitos del CBU. Es lo que
+    -- convierte al banco en un DATO y no en un texto libre — sin esto conviven
+    -- «BANCO DE FORMOSA», «Bco Formosa» y «formosa» como tres bancos distintos.
+    codigo_bcra TEXT,
+    titular     TEXT,                          -- a nombre de quién está
     tipo        TEXT,                          -- CC | CA
     numero      TEXT,
     cbu         TEXT,

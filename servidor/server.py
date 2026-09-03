@@ -19,6 +19,7 @@ Módulos (estructura dictada por Juan, 2026-08-17):
 Correr:  py servidor/server.py     (localhost:8310)
 """
 import json
+import bancos_ar
 import os
 import re
 import sqlite3
@@ -235,6 +236,26 @@ def _migrar(con):
             "SELECT id, 'sin_clasificar', percepciones, "
             "  'Otros Tributos del export de ARCA — hay que decir de qué es' "
             "FROM facturas WHERE ABS(COALESCE(percepciones,0)) > 0.009")
+        con.commit()
+
+    # ── el banco de la cuenta, contra el maestro del BCRA ──
+    cq = {f[1] for f in con.execute("PRAGMA table_info(cuentas_bancarias)")}
+    if "codigo_bcra" not in cq:
+        print("  migrando: código BCRA y titular en las cuentas…")
+        con.execute("ALTER TABLE cuentas_bancarias ADD COLUMN codigo_bcra TEXT")
+        con.execute("ALTER TABLE cuentas_bancarias ADD COLUMN titular TEXT")
+        # Backfill: el CBU YA tiene el banco adentro — sus primeros 3 dígitos
+        # son el código de entidad. Es el dato más confiable que hay.
+        for c in con.execute("SELECT id, banco, cbu FROM cuentas_bancarias").fetchall():
+            cod = None
+            if c["cbu"] and len(re.sub(r"\D", "", c["cbu"])) >= 3:
+                cod = re.sub(r"\D", "", c["cbu"])[:3]
+            elif c["banco"]:
+                m = bancos_ar.buscar(c["banco"])
+                if len(m) == 1:
+                    cod = m[0][0]
+            if cod:
+                con.execute("UPDATE cuentas_bancarias SET codigo_bcra=? WHERE id=?", (cod, c["id"]))
         con.commit()
 
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
@@ -680,11 +701,43 @@ def api_cuentas_alta():
     if not (b.get("banco") or "").strip():
         con.close()
         return jsonify({"error": "falta el banco"}), 400
+
+    # ── EL BANCO SE RESUELVE CONTRA EL MAESTRO DEL BCRA (03/09) ──────────────
+    # Escribir el nombre a mano es como se llenan las bases de «BANCO DE
+    # FORMOSA», «Bco Formosa» y «formosa» conviviendo. Si viene el código, o si
+    # lo que se escribió matchea UNA sola entidad, se guarda la razón social
+    # prolija. Si matchea varias, no se elige por el cliente: se guarda lo que
+    # escribió y queda para completar.
+    cbu = re.sub(r"\D", "", b.get("cbu") or "")
+    codigo = (b.get("codigo_bcra") or "").strip() or (cbu[:3] if len(cbu) >= 3 else None)
+    banco = b["banco"].strip()
+    if not codigo:
+        m = bancos_ar.buscar(banco)
+        if len(m) == 1:
+            codigo = m[0][0]
+    if codigo:
+        ficha = bancos_ar.por_codigo(codigo)
+        if ficha:
+            banco = ficha[2]        # la razón social del maestro
+
+    # El CBU trae su propio verificador: si no cierra, es un número mal
+    # tipeado y una transferencia a ese CBU va a rebotar o —peor— a otro lado.
+    if cbu:
+        ok, motivo, cod_cbu = bancos_ar.validar_cbu(cbu)
+        if not ok:
+            con.close()
+            return jsonify({"error": f"CBU inválido: {motivo}"}), 400
+        if codigo and cod_cbu and cod_cbu != codigo:
+            con.close()
+            return jsonify({"error": f"el CBU es del banco {cod_cbu} y la cuenta dice {codigo}"}), 400
+        codigo = codigo or cod_cbu
+
     cur = con.execute(
-        "INSERT INTO cuentas_bancarias (cliente_id, banco, tipo, numero, cbu, moneda, alias_banco) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (cli["id"], b["banco"].strip(), b.get("tipo"), b.get("numero"),
-         re.sub(r"\D", "", b.get("cbu") or "") or None, b.get("moneda") or "ARS", b.get("alias_banco")))
+        "INSERT INTO cuentas_bancarias (cliente_id, banco, codigo_bcra, tipo, numero, cbu, "
+        " moneda, alias_banco, titular) VALUES (?,?,?,?,?,?,?,?,?)",
+        (cli["id"], banco, codigo, b.get("tipo"), b.get("numero"), cbu or None,
+         b.get("moneda") or "ARS", b.get("alias_banco"),
+         (b.get("titular") or "").strip() or None))
     con.commit()
     cid_cta = cur.lastrowid
     con.close()
@@ -1311,6 +1364,106 @@ def api_retenciones():
     return jsonify({"retenciones": r,
                     "total": round(sum(_n(x["monto"]) for x in r), 2),
                     "sin_certificado": len(sin_cert)})
+
+
+@app.get("/api/bancos/maestro")
+def api_bancos_maestro():
+    """El UNIVERSO de bancos del país: código de entidad del BCRA (los 3
+    primeros dígitos del CBU) y razón social prolija.
+
+    ⚠ SON DOS LISTAS DISTINTAS y no se mezclan (criterio del ERP, 16/08):
+      · esto es el universo, y se usa SOLO al dar de alta una cuenta —
+        escribís "formosa" y sale BANCO DE FORMOSA S.A. bien escrito;
+      · al OPERAR (elegir dónde depositar, qué cuenta debita) se ofrece lo que
+        el cliente TIENE, nunca este universo entero.
+
+    Es público: son los códigos del BCRA, no hay datos de nadie."""
+    q = request.args.get("q", "")
+    datos = (bancos_ar.buscar(q) if q.strip()
+             else [(c, n, r) for c, n, r, _ in bancos_ar.MAESTRO])
+    return jsonify([{"codigo": c, "nombre_corto": n, "nombre": r} for c, n, r in datos])
+
+
+@app.get("/api/c/maestros/incompletos")
+def api_maestros_incompletos():
+    """Lo que falta completar en las bases del cliente.
+
+    Idea del ERP (Juan, 16/08: *"así cada vez profesionalizamos más todo"*): en
+    vez de descubrir que falta un CUIT el día que hay que emitir algo, se ve
+    todo junto y se completa de a poco. Cada hueco dice por qué importa, porque
+    "faltan datos" no mueve a nadie.
+
+    Las listas se cortan en 50; `total` trae el número real."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+
+    def bloque(por_que, sql, params=()):
+        f = filas(con.execute(sql, params))
+        return {"total": len(f), "filas": f[:50], "por_que": por_que}
+
+    out = {
+        "entidades_sin_cuit": bloque(
+            "Sin CUIT no entran en ninguna DJ ni se pueden cruzar con el banco.",
+            "SELECT e.id, m.razon_social FROM entidades_cliente e "
+            "JOIN maestro_entidades m ON m.cuit=e.cuit "
+            "WHERE e.cliente_id=? AND (e.cuit IS NULL OR e.cuit='' OR LENGTH(e.cuit)<7) "
+            "ORDER BY m.razon_social", (cid,)),
+        "entidades_sin_condicion_iva": bloque(
+            "La condición frente al IVA decide qué letra de factura corresponde.",
+            "SELECT e.id, m.razon_social, e.cuit FROM entidades_cliente e "
+            "JOIN maestro_entidades m ON m.cuit=e.cuit "
+            "WHERE e.cliente_id=? AND (m.condicion_iva IS NULL OR m.condicion_iva='') "
+            "ORDER BY m.razon_social", (cid,)),
+        "cuentas_sin_cbu": bloque(
+            "Sin CBU no se puede conciliar una transferencia ni validar a dónde fue.",
+            "SELECT id, banco, numero, alias_banco FROM cuentas_bancarias "
+            "WHERE cliente_id=? AND (cbu IS NULL OR cbu='') ORDER BY banco", (cid,)),
+        "cuentas_sin_tipo": bloque(
+            "Caja de ahorro o cuenta corriente: cambia si puede quedar en descubierto.",
+            "SELECT id, banco, numero FROM cuentas_bancarias "
+            "WHERE cliente_id=? AND (tipo IS NULL OR tipo='') ORDER BY banco", (cid,)),
+        "cuentas_sin_banco_del_maestro": bloque(
+            "El banco no se pudo resolver contra el maestro del BCRA: puede estar "
+            "escrito de dos formas distintas y contarse dos veces.",
+            "SELECT id, banco, numero FROM cuentas_bancarias "
+            "WHERE cliente_id=? AND (codigo_bcra IS NULL OR codigo_bcra='') "
+            "ORDER BY banco", (cid,)),
+        "ventas_sin_actividad": bloque(
+            "Mientras estén así, la DJ de IIBB no cierra: Σ bases ≠ Σ ventas.",
+            "SELECT f.id, f.fecha, f.tipo, f.punto_venta, f.numero, f.total "
+            "FROM facturas f WHERE f.cliente_id=? AND f.mov='venta' "
+            "AND (f.iibb_codigo IS NULL OR f.iibb_codigo='') ORDER BY f.fecha DESC", (cid,)),
+        "tributos_sin_clasificar": bloque(
+            "No se computan en ninguna DJ hasta decir de qué son. Puede haber "
+            "crédito de IVA o de IIBB ahí adentro.",
+            "SELECT f.id, f.fecha, f.tipo, f.punto_venta, f.numero, "
+            "  ROUND(SUM(t.monto),2) AS monto "
+            "FROM factura_tributos t JOIN facturas f ON f.id=t.factura_id "
+            "WHERE f.cliente_id=? AND t.tipo='sin_clasificar' "
+            "GROUP BY f.id ORDER BY ABS(SUM(t.monto)) DESC", (cid,)),
+        "retenciones_sin_certificado": bloque(
+            "El número de certificado es el que vale ante ARCA: sin él la "
+            "retención no se puede computar aunque el monto esté bien.",
+            "SELECT r.id, r.fecha, r.tipo, r.monto, p.numero AS recibo "
+            "FROM retenciones r LEFT JOIN pagos p ON p.id=r.pago_id "
+            "WHERE r.cliente_id=? AND r.direccion='sufrida' "
+            "AND (r.certificado IS NULL OR TRIM(r.certificado)='') "
+            "ORDER BY r.fecha DESC", (cid,)),
+        "cheques_sin_librador": bloque(
+            "Si rebota, al librador es a quien se le reclama.",
+            "SELECT id, numero, banco, importe, fecha_pago FROM cheques "
+            "WHERE cliente_id=? AND origen='recibido' AND estado='en_cartera' "
+            "AND (cuit_librador IS NULL OR cuit_librador='') "
+            "AND (librador_nombre IS NULL OR librador_nombre='') "
+            "ORDER BY fecha_pago", (cid,)),
+    }
+    con.close()
+    out["total_huecos"] = sum(v["total"] for v in out.values() if isinstance(v, dict))
+    return jsonify(out)
 
 
 # ══ CONCILIACIÓN ════════════════════════════════════════════════════════════

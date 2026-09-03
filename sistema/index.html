@@ -1121,16 +1121,26 @@ async function vBancos(){
       el recibo y la factura cuando se usa para pagar o cuando concilia.</div>
     <div class="grid">${cs.map(c => `<div class="card"><div class="k">${esc(c.banco)}</div>
       <div class="v sm">${plata(c.saldo_calculado)}</div>
-      <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.</div></div>`).join('')
+      <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.${
+        c.codigo_bcra ? ` · BCRA ${esc(c.codigo_bcra)}` : ' · <span class="neg">sin maestro</span>'}</div></div>`).join('')
       || '<div class="card"><div class="k">Sin cuentas</div><div class="mini" style="margin-top:6px">Cargá una abajo.</div></div>'}</div>
     <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Cuenta nueva</b>
       <button class="g xs" onclick="toggle('#b-cta')">Mostrar</button></div>
-      <div class="panel-b hide" id="b-cta"><div class="f">
-        <div><label>Banco</label><input id="nb-banco"></div>
+      <div class="panel-b hide" id="b-cta">
+        <div class="mini" style="margin-bottom:8px">El banco se elige del <b>maestro del BCRA</b>,
+          no se escribe: así no conviven «BANCO DE FORMOSA», «Bco Formosa» y «formosa» como
+          tres bancos distintos. Y el CBU se valida — trae su propio dígito verificador.</div>
+        <div class="f">
+        <div class="full"><label>Banco</label>
+          <input id="nb-banco" list="dl-bancos" placeholder="escribí: formosa, galicia, nación…"
+            oninput="buscarBanco()" autocomplete="off">
+          <datalist id="dl-bancos"></datalist>
+          <div class="mini" id="nb-eco" style="margin-top:4px"></div></div>
         <div><label>Tipo</label><select id="nb-tipo"><option value="CC">Cta. corriente</option>
           <option value="CA">Caja de ahorro</option></select></div>
         <div><label>Número</label><input id="nb-num"></div>
-        <div><label>CBU</label><input id="nb-cbu"></div>
+        <div><label>CBU</label><input id="nb-cbu" placeholder="22 dígitos"></div>
+        <div><label>Titular</label><input id="nb-titular" placeholder="a nombre de quién está"></div>
         <div style="display:flex;align-items:flex-end"><button onclick="altaCuenta()">Crear</button></div>
       </div></div>
     </div>
@@ -1157,9 +1167,26 @@ async function vBancos(){
         : '<div class="vacio">Sin movimientos. Se cargan a mano o los deja el job del banco.</div>'}
     </div>`);
 }
+/* El maestro del BCRA: 81 entidades con su código (los 3 primeros dígitos del
+   CBU). Se pide al escribir y se cachea — es público y no cambia. */
+let BANCOS_M = [];
+async function buscarBanco(){
+  const q = val('nb-banco');
+  const eco = $('#nb-eco'); if (!eco) return;
+  if (q.length < 2){ eco.textContent = ''; return; }
+  BANCOS_M = await api('/api/bancos/maestro?q=' + encodeURIComponent(q)).catch(() => []);
+  const dl = $('#dl-bancos');
+  if (dl) dl.innerHTML = BANCOS_M.map(b => `<option value="${esc(b.nombre)}">${esc(b.nombre_corto)} · BCRA ${esc(b.codigo)}</option>`).join('');
+  eco.innerHTML = BANCOS_M.length === 1
+    ? `<span class="pos">${esc(BANCOS_M[0].nombre)} · código BCRA ${esc(BANCOS_M[0].codigo)}</span>`
+    : BANCOS_M.length ? `${BANCOS_M.length} coinciden — elegí uno de la lista`
+    : '<span class="neg">ninguno coincide: revisá cómo se escribe</span>';
+}
 async function altaCuenta(){
+  const uno = BANCOS_M.length === 1 ? BANCOS_M[0].codigo : null;
   try{ await post('/api/c/cuentas', {banco: val('nb-banco'), tipo: val('nb-tipo'),
-    numero: val('nb-num'), cbu: val('nb-cbu')});
+    numero: val('nb-num'), cbu: val('nb-cbu'), titular: val('nb-titular'),
+    codigo_bcra: uno});
     toast('Cuenta creada'); await precargar(); vBancos();
   }catch(e){ toast(e.message, true); }
 }
@@ -1755,15 +1782,45 @@ async function altaEntidad(){
    contestar "¿esto se corrió?" ni "¿por qué falló?" — por eso el historial
    vive en la base y no se pierde al apagar. */
 const RUBROS_JOB = {impuestos:'Impuestos — ARCA y las provincias', bancos:'Bancos — extractos y cheques'};
+/* Los nombres de cada hueco. Cada uno dice POR QUÉ importa —eso viene del
+   servidor—: "faltan datos" no mueve a nadie, "sin CUIT no entra en la DJ" sí. */
+const HUECOS = {
+  entidades_sin_cuit: 'Entidades sin CUIT',
+  entidades_sin_condicion_iva: 'Entidades sin condición frente al IVA',
+  cuentas_sin_cbu: 'Cuentas sin CBU',
+  cuentas_sin_tipo: 'Cuentas sin tipo (CA/CC)',
+  cuentas_sin_banco_del_maestro: 'Cuentas con el banco sin resolver',
+  ventas_sin_actividad: 'Ventas sin actividad de IIBB',
+  tributos_sin_clasificar: 'Facturas con tributos sin clasificar',
+  retenciones_sin_certificado: 'Retenciones sin número de certificado',
+  cheques_sin_librador: 'Cheques en cartera sin librador',
+};
+
 async function vPanel(){
   cargando('Panel');
-  const [p, js] = await Promise.all([api('/api/panel'), api('/api/jobs')]);
+  const [p, js, hu] = await Promise.all([api('/api/panel'), api('/api/jobs'),
+    api('/api/c/maestros/incompletos').catch(() => null)]);
   if (js.error) return pintar(`<h2>Panel</h2><div class="vacio">${esc(js.error)}</div>`);
   const d = p.datos;
   pintar(`
     <h2>Panel</h2>
     <div class="sub">El estado del equipo y todo lo que se puede correr.
       Los jobs marcados <b>atendido</b> abren una ventana y esperan que entres vos (2FA o captcha).</div>
+
+    ${hu ? `<div class="panel"><div class="panel-h"><b>Lo que falta completar en las bases</b>
+      <span class="mini">${hu.total_huecos} hueco(s) de ${esc(CLI.alias)}</span></div>
+      <div class="panel-b">
+        <div class="mini" style="margin-bottom:10px">Se ve todo junto y se completa de a poco,
+          en vez de descubrir que falta un CUIT el día que hay que presentar. Cada línea dice
+          por qué importa.</div>
+        ${hu.total_huecos ? Object.entries(HUECOS).filter(([k]) => hu[k]?.total).map(([k,t]) => `
+          <div class="cand" style="display:block">
+            <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+              <b>${esc(t)}</b><span class="badge b-warn">${hu[k].total}</span></div>
+            <div class="mini" style="margin-top:4px">${esc(hu[k].por_que)}</div>
+          </div>`).join('')
+          : '<div class="vacio">Nada pendiente: las bases están completas.</div>'}
+      </div></div>` : ''}
 
     <div class="panel"><div class="panel-h"><b>Servicios</b>
       <span class="mini">${esc(p.equipo.maquina)} · ${esc(p.equipo.usuario)}</span></div>
