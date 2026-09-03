@@ -21,7 +21,10 @@
 -- La identidad va SIEMPRE por CUIT: ya nos pasó duplicar una empresa por
 -- una letra de diferencia en el nombre. El nombre es solo para leer.
 CREATE TABLE maestro_entidades (
-    cuit            TEXT PRIMARY KEY,          -- 11 dígitos, sin guiones
+    -- El documento que identifica: 11 dígitos = CUIT, 7-8 = DNI (una
+    -- factura B a una persona física solo trae el DNI, y el CUIT no se
+    -- deduce sin inventar el prefijo y el verificador).
+    cuit            TEXT PRIMARY KEY,          -- sin guiones
     razon_social    TEXT NOT NULL,
     nombre_fantasia TEXT,
     tipo_persona    TEXT,                      -- fisica | juridica

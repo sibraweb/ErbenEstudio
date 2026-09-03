@@ -75,12 +75,16 @@ JOBS = {
         "args": ["--alias", "--cuenta", "--archivo"],
     },
     "arca_comprobantes": {
-        "archivo": "mis_comprobantes.py", "propio": False,
+        "archivo": "arca_comprobantes.py", "propio": True,
         "titulo": "ARCA — Mis Comprobantes",
         "rubro": "impuestos", "fuente": "arca", "atendido": True,
-        "desc": "Baja emitidos y recibidos del período. Alimenta el módulo "
-                "Facturas.",
-        "args": ["--alias"],
+        # Este NO se hereda aunque el ERP tenga uno: aquel copia el export a la
+        # carpeta de NUESTRO ERP y lo carga a NUESTRA Supabase. El del estudio
+        # baja a H:\My Drive\ERBEN\clientes\<cliente>\comprobantes\ y nada
+        # más. Del prestado sí se reusa el login (tools/sesion_arca.py).
+        "desc": "Baja emitidos y recibidos del período a la carpeta del "
+                "cliente en el Drive del estudio. Alimenta el módulo Facturas.",
+        "args": ["--alias", "--desde", "--hasta"],
     },
     "cargar_vencimientos": {
         "archivo": "cargar_vencimientos.py", "propio": True,

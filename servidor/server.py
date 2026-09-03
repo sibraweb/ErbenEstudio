@@ -475,9 +475,15 @@ def api_entidades_alta():
         return err
     b = request.get_json(force=True)
     cuit = re.sub(r"\D", "", b.get("cuit") or "")
-    if len(cuit) != 11:
+    # ⚠ NO SIEMPRE ES UN CUIT (02/09). Una factura B a una persona física la
+    # identifica por DNI, y sin esto esas ventas no entran: al cargar los
+    # comprobantes de ARCA, 8 ventas reales quedaban afuera porque el receptor
+    # tenía DNI. El largo dice qué es —7 u 8 dígitos es DNI, 11 es CUIT— y no
+    # se completa el CUIT a partir del DNI: el prefijo (20/23/24/27) y el
+    # dígito verificador serían inventados.
+    if len(cuit) not in (7, 8, 11):
         con.close()
-        return jsonify({"error": "CUIT inválido (11 dígitos)"}), 400
+        return jsonify({"error": "documento inválido: 11 dígitos (CUIT) o 7-8 (DNI)"}), 400
     if not con.execute("SELECT 1 FROM maestro_entidades WHERE cuit=?", (cuit,)).fetchone():
         rs = (b.get("razon_social") or "").strip()
         if not rs:
