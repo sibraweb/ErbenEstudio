@@ -259,7 +259,9 @@ const num = id => { const v = val(id); return v === '' ? null : parseFloat(v.rep
 function tabla(cols, filas, opts){
   return `<div class="tabla-wrap"><table><thead><tr>${
     cols.map(c => `<th data-col${/importe|monto|total|base|saldo|debo|debe|aplicado/i.test(c) ? ' class="num"' : ''}>${c}</th>`).join('')
-  }</tr></thead><tbody>${filas.map((f,i) => `<tr${opts?.onclick ? ` class="click" onclick="${opts.onclick(i)}"` : ''}>${
+  // `fila(i)` deja marcar una fila entera — hoy lo usan los duplicados de
+  // cheques, que se ven de un vistazo y no leyendo columna por columna.
+  }</tr></thead><tbody>${filas.map((f,i) => `<tr${opts?.onclick ? ` class="click" onclick="${opts.onclick(i)}"` : ''}${opts?.fila ? opts.fila(i) : ''}>${
     f.map(c => typeof c === 'object' && c?.n !== undefined ? `<td class="num">${c.n}</td>` : `<td>${c}</td>`).join('')
   }</tr>`).join('')}</tbody></table></div>`;
 }
@@ -1309,9 +1311,26 @@ async function altaMov(){
    nace con su recibo. Si entrara suelto habría plata en cartera sin dueño. */
 let chImpagas = [];
 
+/* Las dos marcas de duplicado, traídas del ERP (Juan, 16/08: «como Excel, un
+   rojo a los duplicados así vemos rápido»). El id de cada cheque repetido se
+   guarda acá para pintarlo en la grilla. */
+let DUP_ROJO = new Set(), DUP_AMBAR = new Set();
+function marcaDup(id){
+  return DUP_ROJO.has(id) ? ' style="background:rgba(196,97,76,.18)" title="⚠ CARGADO DOS VECES: hay otro cheque con el mismo número, importe, vencimiento y banco. Es el mismo cheque contado dos veces."'
+    : DUP_AMBAR.has(id) ? ' style="background:rgba(208,166,75,.14)" title="⚠ Mismo número y mismo banco = el mismo cheque, aunque la fecha o el importe difieran. Sobra una fila: decidí cuál de los dos datos vale."'
+    : '';
+}
+
 async function vCheques(){
   cargando('Cheques');
-  const chs = await api('/api/c/cheques');
+  const [chs, dup, ext] = await Promise.all([
+    api('/api/c/cheques'),
+    api('/api/c/cheques/duplicados').catch(() => ({exactos:[], por_numero:[], n_exactos:0, n_por_numero:0, importe_de_mas:0})),
+    api('/api/c/cheques/en-extracto').catch(() => ({propuestas:[], cantidad:0, total:0})),
+  ]);
+  DUP_ROJO = new Set(); DUP_AMBAR = new Set();
+  dup.exactos.forEach(g => g.cheques.slice(1).forEach(c => DUP_ROJO.add(c.id)));
+  dup.por_numero.forEach(g => g.cheques.slice(1).forEach(c => DUP_AMBAR.add(c.id)));
   const rec = chs.filter(c => c.origen === 'recibido'), emi = chs.filter(c => c.origen === 'emitido');
   pintar(`
     <h2>Cheques</h2>
@@ -1326,6 +1345,42 @@ async function vCheques(){
       <button onclick="abrirChq('rec')">+ Cheque recibido</button>
       <button class="g" onclick="abrirChq('emi')">+ Cheque emitido</button>
     </div>
+
+    ${dup.n_exactos || dup.n_por_numero ? `<div class="panel"><div class="panel-h">
+      <b>El mismo cheque contado dos veces</b>
+      <span class="mini">${dup.n_exactos} exacto(s) · ${dup.n_por_numero} con el número repetido</span></div>
+      <div class="panel-b">
+        <div class="mini" style="margin-bottom:8px">Un número de cheque es <b>único dentro de la
+          cuenta</b>: mismo banco + mismo número = el mismo cheque, aunque la fila diga otra fecha
+          o importe. En <span class="neg">rojo</span> los que además coinciden en todo (sobra una
+          fila, sin nada que decidir); en <span class="amb">ámbar</span> los que difieren en algún
+          dato (sobra una igual, pero antes hay que decidir cuál vale).
+          ${dup.importe_de_mas ? `Hay <b>${plata(dup.importe_de_mas)}</b> contados de más.` : ''}</div>
+        ${[...dup.exactos.map(g => [g,'rojo']), ...dup.por_numero.map(g => [g,'ambar'])]
+          .map(([g,clase]) => `<div class="cand" style="display:block">
+            <div><b class="${clase==='rojo'?'neg':'amb'}">Nº ${esc(g.cheques[0].numero)}</b>
+              · ${esc(g.cheques[0].banco||'sin banco')} · ${g.cheques.length} filas
+              ${g.emitido_y_recibido ? '<span class="badge b-warn">entró como emitido Y como recibido</span>' : ''}</div>
+            ${g.cheques.map(c => `<div class="mini">↳ #${c.id} · ${esc(c.origen)} ·
+              ${plata(c.importe)} · vence ${fecha(c.fecha_pago)} · ${esc(c.estado)}</div>`).join('')}
+          </div>`).join('')}
+      </div></div>` : ''}
+
+    ${ext.cantidad ? `<div class="panel"><div class="panel-h">
+      <b>El banco nombra cheques que no están cargados</b>
+      <span class="mini">${ext.cantidad} · ${plata(ext.total)}</span></div>
+      <div class="panel-b">
+        <div class="mini" style="margin-bottom:8px">El extracto nombra el cheque en el concepto.
+          Si ese número no está en la cartera, o se emitió uno y nadie lo cargó, o se depositó uno
+          que no estaba anotado. <b>Se proponen, no se crean</b>: el banco dice el número y el
+          importe, pero no quién libró ni de qué cobranza vino.</div>
+        ${ext.propuestas.slice(0,20).map(x => `<div class="cand" style="display:block">
+          <b>Nº ${esc(x.numero)}</b> · sería <b>${esc(x.seria)}</b> ·
+          ${fecha(x.fecha)} · ${esc(x.banco)} ·
+          <span class="${x.importe<0?'neg':'pos'}">${plata(x.importe)}</span>
+          <div class="mini">${esc((x.descripcion||'').slice(0,80))}</div></div>`).join('')}
+        ${ext.cantidad > 20 ? `<div class="mini">y ${ext.cantidad - 20} más</div>` : ''}
+      </div></div>` : ''}
 
     <div class="panel hide" id="ch-rec">
       <div class="panel-h"><b>Nuevo cheque recibido</b>
@@ -1396,7 +1451,8 @@ async function vCheques(){
           {n:plata(c.importe)}, badgeEstado(c.estado),
           c.estado === 'en_cartera' ? `<div class="row-act">
             <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
-            <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']))
+            <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']),
+        {fila: i => marcaDup(rec[i].id)})
         : `<div class="vacio">Sin cheques cobrados.<br>
            <span class="mini">Se cargan con "+ Cheque recibido", o desde Pagos → cobranza con medio cheque.</span></div>`}
     </div>
@@ -1406,7 +1462,8 @@ async function vCheques(){
         emi.map(c => [esc(c.numero), esc(c.banco||'—'),
           c.beneficiario ? esc(c.beneficiario) : '<span class="mini">sin definir</span>',
           `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
-          {n:plata(c.importe)}, badgeEstado(c.estado)]))
+          {n:plata(c.importe)}, badgeEstado(c.estado)]),
+        {fila: i => marcaDup(emi[i].id)})
         : '<div class="vacio">Sin cheques emitidos.</div>'}
     </div>`);
 }

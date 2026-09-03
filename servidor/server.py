@@ -980,6 +980,138 @@ def api_cheque_endosar(chid):
     return jsonify({"ok": True})
 
 
+@app.get("/api/c/cheques/duplicados")
+def api_cheques_duplicados():
+    """El mismo cheque contado dos veces.
+
+    ⚠ LA REGLA ES DE JUAN (ERP, 26/08): *"pero tienen el mismo número"*. Un
+    número de cheque es ÚNICO dentro de la cuenta. Mismo banco + mismo número =
+    el mismo cheque, aunque la fila diga otra fecha u otro importe: sobra una
+    fila igual, solo que con el dato pisado además de repetido.
+
+    ⚠ Y ACÁ EL `UNIQUE` NO ALCANZA: es (cliente, origen, banco, numero), así
+    que **permite** que el mismo cheque entre una vez como emitido y otra como
+    recibido. Es exactamente la forma que tenían los 11 duplicados que se
+    encontraron en el otro sistema: un cheque de tercero recibido y después
+    endosado, contado como si fueran dos. Por eso esto se calcula, no se
+    previene con una restricción.
+
+    Dos marcas, porque cambia LA ACCIÓN y no la gravedad:
+      exacto  — número + importe + vencimiento + banco iguales: sobra una fila,
+                sin nada que decidir.
+      numero  — mismo número y banco con otra fecha o importe: también sobra
+                una, pero antes hay que decidir cuál de los dos datos vale.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    chs = filas(con.execute(
+        "SELECT id, origen, numero, banco, importe, fecha_pago, estado "
+        "FROM cheques WHERE cliente_id=? ORDER BY id", (cli["id"],)))
+    con.close()
+
+    def nro(c):
+        return str(c["numero"] or "").lstrip("0")
+
+    # El banco entra en las dos llaves: chequeras de bancos distintos arrancan
+    # en 1, así que sin él el «cheque nº 2» de dos bancos es el mismo.
+    def clave_exacta(c):
+        n = nro(c)
+        return "|".join([n, str(round(_n(c["importe"]))), c["fecha_pago"] or "",
+                         c["banco"] or ""]) if n else None
+
+    def clave_numero(c):
+        n = nro(c)
+        return f"{n}|{c['banco'] or ''}" if n else None
+
+    grupos = {}
+    for c in chs:
+        for tipo, k in (("exacto", clave_exacta(c)), ("numero", clave_numero(c))):
+            if k:
+                grupos.setdefault((tipo, k), []).append(c)
+
+    exactos, por_numero = [], []
+    vistos_num = set()
+    for (tipo, k), g in grupos.items():
+        if len(g) < 2:
+            continue
+        item = {"clave": k, "cheques": g,
+                "importe": round(sum(_n(x["importe"]) for x in g[1:]), 2),
+                # La forma que tenían los 11 del ERP: el mismo cheque entrando
+                # por las dos puertas.
+                "emitido_y_recibido": len({x["origen"] for x in g}) > 1}
+        if tipo == "exacto":
+            exactos.append(item)
+            vistos_num.add(clave_numero(g[0]))
+        else:
+            por_numero.append(item)
+
+    # Un exacto ya está contado: no se repite en la lista ámbar.
+    por_numero = [x for x in por_numero if x["clave"] not in vistos_num]
+
+    return jsonify({
+        "exactos": exactos, "por_numero": por_numero,
+        "n_exactos": len(exactos), "n_por_numero": len(por_numero),
+        "importe_de_mas": round(sum(e["importe"] for e in exactos), 2),
+    })
+
+
+# Los bancos escriben el cheque de mil formas. Lo único constante es la palabra
+# y un número largo cerca.
+_RE_CHEQUE = re.compile(r"(?:cheque|cheq|chq|e-?cheq|echeq)\D{0,12}(\d{5,12})", re.I)
+
+
+@app.get("/api/c/cheques/en-extracto")
+def api_cheques_en_extracto():
+    """Movimientos del banco que parecen un cheque y no tienen uno cargado.
+
+    De dónde sale: el extracto nombra el cheque en el concepto («PAGO CHEQUE
+    12345678»). Si ese número no está en la cartera, o el cheque se emitió y
+    nadie lo cargó, o se depositó uno que no estaba anotado. En los dos casos
+    hay plata que se movió sin su papel.
+
+    ⚠ Propone, no crea. El extracto dice el número y el importe, pero no dice
+    quién libró ni de qué cobranza vino — y esos son justamente los datos que
+    no se pueden inventar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    movs = filas(con.execute(
+        "SELECT m.id, m.fecha, m.importe, m.descripcion, m.conciliado, "
+        "  c.banco, c.id AS cuenta_id "
+        "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "WHERE m.cliente_id=? AND m.descripcion IS NOT NULL "
+        "ORDER BY m.fecha DESC", (cid,)))
+    cargados = {str(r["numero"] or "").lstrip("0")
+                for r in con.execute("SELECT numero FROM cheques WHERE cliente_id=?", (cid,))}
+    con.close()
+
+    out = []
+    for m in movs:
+        h = _RE_CHEQUE.search(m["descripcion"] or "")
+        if not h:
+            continue
+        numero = h.group(1).lstrip("0")
+        if numero in cargados:
+            continue
+        out.append({
+            "movimiento_id": m["id"], "fecha": m["fecha"], "importe": m["importe"],
+            "banco": m["banco"], "cuenta_id": m["cuenta_id"],
+            "descripcion": m["descripcion"], "numero": h.group(1),
+            # Un débito es un cheque PROPIO que se cobró; un crédito es uno de
+            # tercero que se depositó.
+            "seria": "emitido" if m["importe"] < 0 else "recibido",
+            "conciliado": bool(m["conciliado"]),
+        })
+    return jsonify({"propuestas": out, "cantidad": len(out),
+                    "total": round(sum(abs(_n(x["importe"])) for x in out), 2)})
+
+
 # ══ PAGOS Y COBRANZAS ═══════════════════════════════════════════════════════
 @app.get("/api/c/pagos")
 def api_pagos():
