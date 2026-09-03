@@ -367,6 +367,10 @@ CREATE TABLE vencimientos (
     fecha      TEXT NOT NULL,
     importe    REAL,
     estado     TEXT NOT NULL DEFAULT 'a_vencer',
+    -- ⚠ El movimiento que lo DEBITÓ. Marcar «pagado» sin esto es una
+    -- afirmación sin prueba: en el otro sistema quedaron 581 VEP pagados y
+    -- ninguno atado a su débito, y después no había cómo demostrar el pago.
+    movimiento_id INTEGER REFERENCES movimientos_banco(id),
     nota       TEXT,
     actualizado TEXT,
     UNIQUE (cliente_id, fuente, impuesto, periodo)

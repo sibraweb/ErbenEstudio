@@ -116,13 +116,28 @@ def _limpiar(carpeta, cuantas=COPIAS):
 def estado(carpeta=None):
     """Para el panel: cuándo fue la última y si conviene avisar."""
     carpeta = Path(carpeta or rutas.RESPALDO)
+    # La forma de la respuesta es SIEMPRE la misma. Antes, sin copias, faltaban
+    # `ultima`, `dias` y `mb`, y el que leía esos campos se rompía justo en el
+    # caso raro — que es cuando más importa que la pantalla funcione.
+    vacio = {"hay": False, "copias": 0, "ultima": None, "dias": None,
+             "mb": None, "carpeta": str(carpeta), "avisar": True}
+
+    # ⚠ NO ES LO MISMO «nunca se respaldó» QUE «no puedo ver el Drive» (03/09).
+    # Decir lo primero cuando pasa lo segundo es una acusación falsa: las
+    # copias pueden estar todas ahí y lo que se cayó es el montaje de Google
+    # Drive. Y el arreglo es distinto: una pide respaldar, la otra prender
+    # Drive.
+    if not rutas.hay_drive():
+        return {**vacio, "mensaje": f"El Drive del estudio no está montado "
+                                    f"({rutas.DRIVE}). No puedo ver las copias "
+                                    f"— pueden estar todas ahí.",
+                "sin_drive": True}
     try:
         copias = sorted(carpeta.glob("estudio_*.sqlite3"), key=lambda p: p.name, reverse=True)
     except OSError:
         copias = []
     if not copias:
-        return {"hay": False, "copias": 0, "avisar": True,
-                "mensaje": "Nunca se respaldó la base."}
+        return {**vacio, "mensaje": "Nunca se respaldó la base."}
     ultima = copias[0]
     # Por regex y no por posición: un cambio de una letra en el prefijo movía
     # todos los índices y la fecha salía mal sin que nadie se entere.

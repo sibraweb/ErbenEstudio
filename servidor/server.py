@@ -258,6 +258,13 @@ def _migrar(con):
                 con.execute("UPDATE cuentas_bancarias SET codigo_bcra=? WHERE id=?", (cod, c["id"]))
         con.commit()
 
+    # ── el impuesto pagado, atado a su débito ──
+    cvv = {f[1] for f in con.execute("PRAGMA table_info(vencimientos)")}
+    if "movimiento_id" not in cvv:
+        print("  migrando: el impuesto pagado se ata al movimiento que lo debitó…")
+        con.execute("ALTER TABLE vencimientos ADD COLUMN movimiento_id INTEGER")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -1464,6 +1471,213 @@ def api_maestros_incompletos():
     con.close()
     out["total_huecos"] = sum(v["total"] for v in out.values() if isinstance(v, dict))
     return jsonify(out)
+
+
+@app.get("/api/c/tesoreria/sin-contraparte")
+def api_sin_contraparte():
+    """Qué documento le falta a cada cosa para quedar explicada.
+
+    Idea del ERP (Juan, 23/08: *"para ver qué movimientos no tienen
+    contraparte"*). Es el cierre del módulo: mientras esta lista tenga algo,
+    hay pesos que se movieron y nadie sabe por qué.
+
+    ⚠ El ERP lo saca de una vista de Postgres (`v_estado_contable`) que cruza
+    bancos, impuestos, cheques y facturas. Acá se arma con consultas sueltas
+    sobre las mismas cuatro cosas — es la misma idea, no la misma vista.
+
+    ⚠ Y hay un corte: solo cuenta lo VENCIDO o ya ocurrido. Una factura que
+    todavía no venció no es un hueco, es el negocio andando. Una lista que
+    nunca baja se termina ignorando."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid, hoy = cli["id"], _hoy()
+    grupos = []
+
+    def bloque(clase, falta, sql, params):
+        f = filas(con.execute(sql, params))
+        if f:
+            grupos.append({
+                "clase": clase, "falta": falta, "n": len(f),
+                "total": round(sum(abs(_n(x["importe"])) for x in f), 2),
+                "detalle": f[:100],
+            })
+
+    bloque("Movimiento del banco", "el comprobante que lo explique",
+           "SELECT m.id, m.fecha, m.importe, "
+           "  COALESCE(m.descripcion,'(sin descripción)') AS detalle, c.banco "
+           "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+           "WHERE m.cliente_id=? AND m.conciliado=0 AND m.pago_id IS NULL "
+           "ORDER BY ABS(m.importe) DESC", (cid,))
+
+    bloque("Factura vencida impaga", "el pago",
+           "SELECT f.id, f.fecha, f.total AS importe, "
+           "  (f.tipo || ' ' || COALESCE(f.punto_venta,'') || '-' || COALESCE(f.numero,'') "
+           "   || ' · ' || m.razon_social) AS detalle, f.mov "
+           "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+           "JOIN maestro_entidades m ON m.cuit=e.cuit "
+           "WHERE f.cliente_id=? AND f.fecha < ? AND f.tipo<>'NC' "
+           "AND ABS(f.total - COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a "
+           "     WHERE a.factura_id=f.id),0)) > 0.01 "
+           "ORDER BY ABS(f.total) DESC", (cid, hoy))
+
+    bloque("Cheque en cartera vencido", "depositarlo o endosarlo",
+           "SELECT id, fecha_pago AS fecha, importe, "
+           "  ('Nº ' || numero || ' · ' || COALESCE(banco,'sin banco')) AS detalle "
+           "FROM cheques WHERE cliente_id=? AND origen='recibido' "
+           "AND estado='en_cartera' AND fecha_pago < ? "
+           "ORDER BY importe DESC", (cid, hoy))
+
+    # Un cheque propio que ya venció y no aparece debitado es plata que el
+    # cliente cree que salió y capaz no salió — o salió y nadie lo anotó.
+    bloque("Cheque emitido vencido", "el débito en el banco",
+           "SELECT id, fecha_pago AS fecha, importe, "
+           "  ('Nº ' || numero || ' · ' || COALESCE(banco,'sin banco')) AS detalle "
+           "FROM cheques WHERE cliente_id=? AND origen='emitido' "
+           "AND estado='emitido' AND fecha_pago < ? "
+           "ORDER BY importe DESC", (cid, hoy))
+
+    bloque("Cobranza o pago a cuenta", "a qué factura se imputa",
+           "SELECT p.id, p.fecha, p.total AS importe, "
+           "  (COALESCE(p.numero,'recibo ' || p.id) || ' · ' || m.razon_social) AS detalle, "
+           "  p.direccion "
+           "FROM pagos p JOIN entidades_cliente e ON e.id=p.entidad_id "
+           "JOIN maestro_entidades m ON m.cuit=e.cuit "
+           "WHERE p.cliente_id=? AND NOT EXISTS "
+           "  (SELECT 1 FROM pago_aplicaciones a WHERE a.pago_id=p.id) "
+           "ORDER BY p.total DESC", (cid,))
+
+    bloque("Obligación vencida", "presentarla o pagarla",
+           "SELECT id, fecha, importe, "
+           "  (impuesto || ' ' || periodo || ' · ' || fuente) AS detalle, estado "
+           "FROM vencimientos WHERE cliente_id=? AND fecha < ? AND estado<>'pagado' "
+           "ORDER BY fecha", (cid, hoy))
+
+    con.close()
+    return jsonify({
+        "grupos": grupos,
+        "cantidad": sum(g["n"] for g in grupos),
+        "total": round(sum(g["total"] for g in grupos), 2),
+        "corte": hoy,
+    })
+
+
+@app.get("/api/c/tesoreria/impuestos")
+def api_tesoreria_impuestos():
+    """La deuda impositiva, y si cada pago está atado a su débito del banco.
+
+    Juan (23/08, en el ERP): *"que quede nomás pagado, y registrado en el
+    resumen bancario"*. Ahí la deuda vivía escondida adentro de «Posición hoy»
+    y la conciliación contra el banco no existía: 581 VEP pagados y ninguno
+    atado a su débito. Un impuesto marcado como pagado sin el movimiento que lo
+    respalde es una afirmación sin prueba."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid, hoy = cli["id"], _hoy()
+
+    vs = filas(con.execute(
+        "SELECT v.*, "
+        "  (SELECT m.id FROM movimientos_banco m WHERE m.id=v.movimiento_id) AS mov_id, "
+        "  (SELECT m.fecha FROM movimientos_banco m WHERE m.id=v.movimiento_id) AS mov_fecha, "
+        "  (SELECT m.importe FROM movimientos_banco m WHERE m.id=v.movimiento_id) AS mov_importe "
+        "FROM vencimientos v WHERE v.cliente_id=? ORDER BY v.fecha DESC", (cid,)))
+
+    for v in vs:
+        v["vencido"] = v["fecha"] < hoy and v["estado"] != "pagado"
+        v["sin_respaldo"] = v["estado"] == "pagado" and not v["mov_id"]
+
+    def suma(f):
+        return round(sum(_n(v["importe"]) for v in vs if f(v)), 2)
+
+    con.close()
+    return jsonify({
+        "vencimientos": vs,
+        "deuda_total": suma(lambda v: v["estado"] != "pagado"),
+        "vencido": suma(lambda v: v["vencido"]),
+        "a_vencer": suma(lambda v: v["estado"] != "pagado" and not v["vencido"]),
+        "pagado": suma(lambda v: v["estado"] == "pagado"),
+        "sin_respaldo": suma(lambda v: v["sin_respaldo"]),
+        "n_sin_respaldo": len([v for v in vs if v["sin_respaldo"]]),
+    })
+
+
+@app.post("/api/c/vencimientos/<int:vid>/pagar")
+def api_vencimiento_pagar(vid):
+    """Marca la obligación como pagada, atada al movimiento que la debitó.
+
+    ⚠ El movimiento es OBLIGATORIO salvo que se diga expresamente que no lo
+    hay (`sin_movimiento`). Marcar «pagado» sin el débito es lo que dejó 581
+    VEP sin respaldo en el otro sistema: después nadie puede probar que se
+    pagó, ni encontrar el comprobante si ARCA lo reclama."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    v = _de_este_cliente(con, "vencimientos", vid, cli["id"])
+    if not v:
+        con.close()
+        return jsonify({"error": "obligación inexistente para este cliente"}), 404
+    b = request.get_json(force=True)
+    mov_id = b.get("movimiento_id")
+    if not mov_id and not b.get("sin_movimiento"):
+        con.close()
+        return jsonify({"error": "falta el movimiento del banco que lo debitó "
+                                 "(o decir sin_movimiento con el motivo)"}), 400
+    if mov_id:
+        mov = _de_este_cliente(con, "movimientos_banco", mov_id, cli["id"])
+        if not mov:
+            con.close()
+            return jsonify({"error": "movimiento inexistente para este cliente"}), 400
+        if mov["importe"] >= 0:
+            con.close()
+            return jsonify({"error": "un impuesto se paga con un DÉBITO, y ese "
+                                     "movimiento acredita"}), 400
+        con.execute("UPDATE movimientos_banco SET conciliado=1 WHERE id=?", (mov_id,))
+    con.execute("UPDATE vencimientos SET estado='pagado', movimiento_id=?, "
+                " nota=COALESCE(?, nota), actualizado=? WHERE id=?",
+                (mov_id, b.get("nota"), _hoy(), vid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/c/tesoreria/impuestos/proponer")
+def api_impuestos_proponer():
+    """Qué débito del banco puede ser cada obligación sin respaldo.
+
+    Mismo criterio que la conciliación de facturas: coincide el IMPORTE y la
+    fecha cae cerca. Y la misma regla — con dos candidatos NO elige sola."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    pendientes = filas(con.execute(
+        "SELECT * FROM vencimientos WHERE cliente_id=? AND movimiento_id IS NULL "
+        "AND importe IS NOT NULL AND importe > 0 ORDER BY fecha DESC", (cid,)))
+    out = []
+    for v in pendientes:
+        cand = filas(con.execute(
+            "SELECT m.id, m.fecha, m.importe, m.descripcion, c.banco "
+            "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+            "WHERE m.cliente_id=? AND m.conciliado=0 AND m.importe < 0 "
+            "AND ABS(ABS(m.importe) - ?) < 0.01 "
+            "AND ABS(JULIANDAY(m.fecha) - JULIANDAY(?)) <= 10 "
+            "ORDER BY ABS(JULIANDAY(m.fecha) - JULIANDAY(?))",
+            (cid, _n(v["importe"]), v["fecha"], v["fecha"])))
+        if cand:
+            out.append({"vencimiento": v, "candidatos": cand, "unico": len(cand) == 1})
+    con.close()
+    return jsonify({"propuestas": out,
+                    "unicos": len([o for o in out if o["unico"]]),
+                    "ambiguos": len([o for o in out if not o["unico"]])})
 
 
 # ══ CONCILIACIÓN ════════════════════════════════════════════════════════════

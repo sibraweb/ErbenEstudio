@@ -465,13 +465,18 @@ let tTab = 'tab', tEnt = null, tabEnt = '';
 async function vTesoreria(){
   cargando('Tesorería');
   const tabs = [['tab','Tablero'],['cc','Cuenta corriente'],['conc','Conciliación'],
-                ['pos','Posición hoy'],['ven','Vencimientos'],['doc','Documentos']];
+                ['pos','Posición hoy'],['ven','Vencimientos'],
+                // Traídas de Tesorería del ERP: la deuda impositiva con su
+                // respaldo bancario, y el cierre del módulo.
+                ['imp','Impuestos'],['scp','Sin contraparte'],
+                ['doc','Documentos']];
   pintar(`<h2>Tesorería</h2>
     <div class="sub">Todo lo de ${esc(CLI.razon_social)} — la empresa se cambia arriba.</div>
     <div class="tabs">${tabs.map(([k,t]) =>
       `<button class="${tTab===k?'on':''}" onclick="tTab='${k}';tEnt=null;vTesoreria()">${t}</button>`).join('')}</div>
     <div id="t-panel"><div class="vacio">Cargando…</div></div>`);
-  ({tab:tTablero, cc:tCC, conc:tConc, pos:tPos, ven:tVen, doc:tDoc}[tTab])();
+  ({tab:tTablero, cc:tCC, conc:tConc, pos:tPos, ven:tVen,
+    imp:tImp, scp:tScp, doc:tDoc}[tTab])();
 }
 
 /* ── EL TABLERO: los huecos, todos accionables desde acá ──
@@ -1109,6 +1114,103 @@ async function vIIBB(){
     <div class="aviso">El portal de ATP recibe estos importes en la grilla de
       <i>Declaración Actividad → Cargar Actividad</i>, una fila por par actividad+alícuota.
       Las deducciones (retenciones, percepciones, SIRCUPA) las trae ATP sola.</div>`);
+}
+
+/* ── IMPUESTOS: la deuda, y si cada pago tiene su débito atado ──
+   Traída de Tesorería del ERP. Allá la deuda vivía escondida adentro de
+   «Posición hoy» y la conciliación contra el banco no existía: 581 VEP
+   pagados y ninguno atado a su débito. Un impuesto marcado como pagado sin el
+   movimiento que lo respalde es una afirmación sin prueba. */
+async function tImp(){
+  const [d, prop] = await Promise.all([
+    api('/api/c/tesoreria/impuestos'),
+    api('/api/c/tesoreria/impuestos/proponer').catch(() => ({propuestas:[], unicos:0})),
+  ]);
+  panelT(`
+    <div class="grid">
+      <div class="card"><div class="k">Deuda impositiva</div>
+        <div class="v sm ${d.deuda_total?'neg':''}">${plata(d.deuda_total)}</div></div>
+      <div class="card"><div class="k">Ya vencido</div>
+        <div class="v sm ${d.vencido?'neg':''}">${plata(d.vencido)}</div></div>
+      <div class="card"><div class="k">Por vencer</div><div class="v sm">${plata(d.a_vencer)}</div></div>
+      <div class="card"><div class="k">Pagado sin respaldo</div>
+        <div class="v sm ${d.n_sin_respaldo?'neg':''}">${d.n_sin_respaldo}</div>
+        <div class="mini">${plata(d.sin_respaldo)} sin el débito atado</div></div>
+    </div>
+    ${d.n_sin_respaldo ? `<div class="aviso" style="margin-top:16px;border-left-color:var(--bad)">
+      <b>${d.n_sin_respaldo} obligación(es) figuran pagadas sin el movimiento que las debitó.</b>
+      Es una afirmación sin prueba: si ARCA lo reclama, no hay con qué demostrarlo.</div>` : ''}
+
+    ${prop.propuestas.length ? `<div class="panel" style="margin-top:16px">
+      <div class="panel-h"><b>Débitos que pueden ser estos impuestos</b>
+        <span class="mini">${prop.unicos} con un único candidato · ${prop.ambiguos} ambiguo(s)</span></div>
+      <div class="panel-b">
+        <div class="mini" style="margin-bottom:8px">Mismo criterio que la conciliación de facturas:
+          coincide el importe y la fecha cae cerca. Con dos candidatos no elige sola.</div>
+        ${prop.propuestas.map(o => `<div class="cand" style="display:block">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
+            <span><b>${esc(o.vencimiento.impuesto)} ${esc(o.vencimiento.periodo)}</b>
+              · ${esc(o.vencimiento.fuente)} · vence ${fecha(o.vencimiento.fecha)}
+              <div class="mini">${plata(o.vencimiento.importe)}</div></span>
+            ${o.unico ? `<button class="xs" onclick="pagarVenc(${o.vencimiento.id},${o.candidatos[0].id})">Atar a este débito</button>`
+              : `<span class="badge b-warn">${o.candidatos.length} candidatos</span>`}
+          </div>
+          ${o.candidatos.map(c => `<div class="mini" style="margin-top:4px">
+            ↳ ${fecha(c.fecha)} · ${esc(c.banco)} · ${plata(c.importe)} ·
+            ${esc((c.descripcion||'').slice(0,50))}
+            ${o.unico ? '' : `<button class="g xs" style="margin-left:6px"
+               onclick="pagarVenc(${o.vencimiento.id},${c.id})">Es este</button>`}</div>`).join('')}
+        </div>`).join('')}
+      </div></div>` : ''}
+
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Las obligaciones</b>
+      <span class="mini">${d.vencimientos.length}</span></div>
+      ${d.vencimientos.length ? tabla(['Fuente','Impuesto','Período','Vence','Importe','Estado','Respaldo'],
+        d.vencimientos.map(v => [esc(v.fuente), esc(v.impuesto), esc(v.periodo),
+          `<span class="${v.vencido?'neg':''}">${fecha(v.fecha)}</span>`,
+          {n:plata(v.importe)}, badgeEstado(v.estado),
+          v.mov_id ? `<span class="mini">${fecha(v.mov_fecha)} · ${plata(v.mov_importe)}</span>`
+            : v.estado === 'pagado' ? '<span class="badge b-warn">sin débito</span>'
+            : '<span class="mini">—</span>']))
+        : '<div class="vacio">Sin obligaciones cargadas. Las traen los jobs de ARCA y ATP.</div>'}
+    </div>`);
+}
+async function pagarVenc(vid, movId){
+  try{ await post(`/api/c/vencimientos/${vid}/pagar`, {movimiento_id: movId});
+    toast('Atado al débito — queda con respaldo'); vTesoreria();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ── SIN CONTRAPARTE: el cierre del módulo ──
+   Mientras esta lista tenga algo, hay pesos que se movieron y nadie sabe por
+   qué. Solo cuenta lo VENCIDO o ya ocurrido: una factura que todavía no venció
+   no es un hueco, es el negocio andando — y una lista que nunca baja se
+   termina ignorando. */
+async function tScp(){
+  const d = await api('/api/c/tesoreria/sin-contraparte');
+  panelT(`
+    <div class="aviso">Cada línea es algo que pasó y <b>no tiene el documento que lo explique</b>.
+      El objetivo es que esta pantalla quede vacía: ahí cada peso está contado.
+      Se mira hasta el ${fecha(d.corte)} — lo que todavía no venció no cuenta.</div>
+    <div class="grid">
+      <div class="card"><div class="k">Sin explicar</div>
+        <div class="v ${d.cantidad?'neg':'pos'}">${d.cantidad}</div></div>
+      <div class="card"><div class="k">Plata involucrada</div>
+        <div class="v sm">${plata(d.total)}</div>
+        <div class="mini">no es deuda: es lo que falta documentar</div></div>
+    </div>
+    ${d.grupos.length ? d.grupos.map(g => `
+      <div class="panel" style="margin-top:16px"><div class="panel-h">
+        <b>${esc(g.clase)}</b>
+        <span class="mini">${g.n} · ${plata(g.total)} · falta <b>${esc(g.falta)}</b></span></div>
+        ${tabla(['Fecha','Detalle','Importe'], g.detalle.map(x => [
+          fecha(x.fecha), esc(x.detalle || ''),
+          {n:`<span class="${x.importe<0?'neg':''}">${plata(x.importe)}</span>`}]))}
+        ${g.n > g.detalle.length ? `<div class="panel-b"><div class="mini">
+          y ${g.n - g.detalle.length} más</div></div>` : ''}
+      </div>`).join('')
+      : `<div class="panel" style="margin-top:16px"><div class="vacio">
+         Nada sin contraparte. Cada movimiento, factura y cheque tiene su documento.</div></div>`}`);
 }
 
 /* ══ BANCOS ══ */
