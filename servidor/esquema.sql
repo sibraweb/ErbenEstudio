@@ -304,6 +304,19 @@ CREATE INDEX ix_venc_cliente ON vencimientos(cliente_id, fecha);
 -- actividad se recalcula siempre de las facturas; acá queda la FOTO de lo
 -- presentado, que es lo que hay que poder mostrar aunque después se corrija
 -- una factura vieja.
+-- ══ EL SALDO A FAVOR DE IVA QUE VIENE DE ANTES ═══════════════════════════════
+-- Un saldo a favor no se pierde: pasa al mes siguiente hasta consumirse. Pero
+-- el primer mes que liquida el estudio arrastra algo que ningun comprobante
+-- cuenta — sale de la ultima DJ que presento el cliente antes de llegar. Es un
+-- dato declarado, no deducido.
+CREATE TABLE iva_saldo_inicial (
+    cliente_id  INTEGER PRIMARY KEY REFERENCES clientes(id),
+    periodo     TEXT NOT NULL,              -- MM/YYYY: el primero que liquida el estudio
+    a_favor     REAL NOT NULL DEFAULT 0,
+    nota        TEXT,
+    actualizado TEXT NOT NULL
+);
+
 CREATE TABLE djs (
     id            INTEGER PRIMARY KEY,
     cliente_id    INTEGER NOT NULL REFERENCES clientes(id),

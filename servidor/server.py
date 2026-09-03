@@ -191,6 +191,19 @@ def _migrar(con):
         con.execute("ALTER TABLE cheques ADD COLUMN beneficiario_entidad_id INTEGER")
         con.commit()
 
+    # ── el saldo a favor de IVA que viene de antes ──
+    tablas = {f[0] for f in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "iva_saldo_inicial" not in tablas:
+        print("  migrando: saldo inicial de IVA (el arrastre a favor)…")
+        con.executescript("""
+            CREATE TABLE iva_saldo_inicial (
+                cliente_id  INTEGER PRIMARY KEY REFERENCES clientes(id),
+                periodo     TEXT NOT NULL,
+                a_favor     REAL NOT NULL DEFAULT 0,
+                nota        TEXT,
+                actualizado TEXT NOT NULL);""")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -1331,46 +1344,206 @@ def api_vencimientos_alta():
     return jsonify({"ok": True, "cargados": n})
 
 
-@app.get("/api/c/iva")
-def api_iva():
-    """Liquidación de IVA del período: débito de ventas − crédito de compras.
-    Sale de las facturas, con el detalle por alícuota para poder controlarlo
-    contra el papel."""
-    con = db()
-    cli, err = cliente_activo(con)
-    if err:
-        con.close()
-        return err
-    rango = _rango_periodo(request.args.get("periodo"))
-    if not rango:
-        con.close()
-        return jsonify({"error": "falta ?periodo=MM/YYYY"}), 400
-    desde, hasta = rango
+def _liquidar_mes(con, cid, periodo):
+    """Lo que el mes genera por sí solo, sin arrastre."""
+    desde, hasta = _rango_periodo(periodo)
 
     def por_alicuota(mov):
         return filas(con.execute(
             "SELECT COALESCE(alicuota_iva,0) AS alicuota, ROUND(SUM(neto),2) AS neto, "
             "  ROUND(SUM(iva),2) AS iva, COUNT(*) AS comprobantes FROM facturas "
             "WHERE cliente_id=? AND mov=? AND fecha BETWEEN ? AND ? GROUP BY 1 ORDER BY 1 DESC",
-            (cli["id"], mov, desde, hasta)))
+            (cid, mov, desde, hasta)))
 
     ventas, compras = por_alicuota("venta"), por_alicuota("compra")
-    debito = round(sum(v["iva"] for v in ventas), 2)
-    credito = round(sum(c["iva"] for c in compras), 2)
-    # Las percepciones sufridas en compras también son pago a cuenta
-    perc = _n(con.execute(
-        "SELECT COALESCE(SUM(percepciones),0) FROM facturas WHERE cliente_id=? AND mov='compra' "
-        "AND fecha BETWEEN ? AND ?", (cli["id"], desde, hasta)).fetchone()[0])
-    saldo = round(debito - credito - perc, 2)
+    return {"ventas": ventas, "compras": compras}
+
+
+def _cadena_iva(con, cid):
+    """Recorre TODOS los meses con movimiento y encadena el saldo a favor.
+
+    Traído del ERP (`_cadena_iva` en api/server.py), donde ya estaba resuelto.
+    Un mes suelto no significa nada: el saldo a favor de julio depende de todos
+    los meses anteriores.
+
+        posición = débito − crédito − percepciones
+        si posición <= 0    ->  el excedente ENGROSA el saldo a favor
+        si alcanza el saldo ->  se consume y no se paga nada
+        si no               ->  se paga la diferencia y el saldo queda en cero
+
+    ⚠ ANTES ACÁ CADA MES SE LIQUIDABA SOLO (visto con datos reales el 02/09):
+    mayo daba a favor $434.419,62 y junio pedía pagar el bruto, como si ese
+    crédito no existiera.
+
+    ⚠ LO QUE FALTA: las RETENCIONES de IVA sufridas. No vienen en Mis
+    Comprobantes —son otra pantalla de ARCA— así que a un cliente al que le
+    retienen mucho esta cuenta le va a mostrar más impuesto del que debe.
+    """
+    porm = {r["mes"]: r for r in con.execute(
+        "SELECT substr(fecha,1,7) AS mes, "
+        "  ROUND(SUM(CASE WHEN mov='venta'  THEN iva ELSE 0 END),2) AS debito, "
+        "  ROUND(SUM(CASE WHEN mov='compra' THEN iva ELSE 0 END),2) AS credito, "
+        "  ROUND(SUM(CASE WHEN mov='compra' THEN percepciones ELSE 0 END),2) AS percep_fact, "
+        "  SUM(CASE WHEN mov='venta'  THEN 1 ELSE 0 END) AS ventas, "
+        "  SUM(CASE WHEN mov='compra' THEN 1 ELSE 0 END) AS compras "
+        "FROM facturas WHERE cliente_id=? GROUP BY 1", (cid,))}
+
+    # La percepción de IVA que cobra el BANCO no está en ninguna factura: se la
+    # debita a la cuenta. En el ERP sale del resumen bancario y es plata que
+    # también resta de la posición, así que si el movimiento está clasificado
+    # como percepción de IVA, entra acá.
+    banco = {r["mes"]: _n(r["monto"]) for r in con.execute(
+        "SELECT substr(fecha,1,7) AS mes, ROUND(SUM(-importe),2) AS monto "
+        "FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
+        # No hay tabla de percepciones: lo único que hay es lo que escribe
+        # el banco en el concepto. Es tosco, pero es el dato que existe — y
+        # dejarlo afuera sería restar de menos.
+        "  AND LOWER(COALESCE(descripcion,'')) LIKE '%perc%iva%' "
+        "GROUP BY 1", (cid,))}
+
+    # De dónde arranca y con cuánto venía. Es un dato DECLARADO: sale de la
+    # última DJ que presentó el cliente antes de que el estudio lo tomara, y no
+    # hay comprobante del que deducirlo.
+    ini = con.execute("SELECT periodo, a_favor FROM iva_saldo_inicial WHERE cliente_id=?",
+                      (cid,)).fetchone()
+    saldo = _n(ini["a_favor"]) if ini else 0.0
+    arranque = f"{ini['periodo'][3:]}-{ini['periodo'][:2]}" if ini else None
+
+    meses = sorted(set(porm) | set(banco) | ({arranque} if arranque else set()))
+    if arranque:
+        meses = [m for m in meses if m >= arranque]
+
+    serie = []
+    for mes in meses:
+        d = porm.get(mes)
+        debito = _n(d["debito"]) if d else 0.0
+        credito = _n(d["credito"]) if d else 0.0
+        percep = round((_n(d["percep_fact"]) if d else 0.0) + banco.get(mes, 0.0), 2)
+        posicion = round(debito - credito - percep, 2)
+        anterior, a_pagar = saldo, 0.0
+        if posicion <= 0:
+            saldo = round(saldo + abs(posicion), 2)
+        elif saldo >= posicion:
+            saldo = round(saldo - posicion, 2)
+        else:
+            a_pagar, saldo = round(posicion - saldo, 2), 0.0
+        serie.append({
+            "periodo": mes, "debito": debito, "credito": credito,
+            "percepciones": percep, "percepciones_banco": banco.get(mes, 0.0),
+            "posicion": posicion, "saldo_favor_anterior": round(anterior, 2),
+            "a_pagar": a_pagar, "saldo_favor_final": saldo,
+            "ventas": (d["ventas"] if d else 0) or 0,
+            "compras": (d["compras"] if d else 0) or 0,
+        })
+    return serie
+
+
+@app.get("/api/c/iva")
+def api_iva():
+    """La liquidación de un período, con su lugar en la cadena.
+
+    Trae el detalle por alícuota (para controlarlo contra el papel) y las tres
+    cifras que importan: lo que el mes genera, lo que venía arrastrado, y lo
+    que realmente hay que pagar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    periodo = (request.args.get("periodo") or "").strip()
+    if not _rango_periodo(periodo):
+        con.close()
+        return jsonify({"error": "falta ?periodo=MM/YYYY"}), 400
+    mes_iso = f"{periodo[3:]}-{periodo[:2]}"
+
+    d = _liquidar_mes(con, cli["id"], periodo)
+    serie = _cadena_iva(con, cli["id"])
+    f = next((x for x in serie if x["periodo"] == mes_iso), None) or {
+        "debito": 0.0, "credito": 0.0, "percepciones": 0.0, "percepciones_banco": 0.0,
+        "posicion": 0.0, "saldo_favor_anterior": 0.0, "a_pagar": 0.0,
+        "saldo_favor_final": 0.0}
     con.close()
     return jsonify({
-        "periodo": request.args["periodo"],
-        "debito_fiscal": debito, "credito_fiscal": credito,
-        "percepciones_sufridas": perc,
-        "saldo": abs(saldo),
-        "resultado": "a pagar" if saldo > 0 else ("a favor" if saldo < 0 else "en cero"),
-        "ventas_por_alicuota": ventas, "compras_por_alicuota": compras,
+        "periodo": periodo,
+        "debito_fiscal": f["debito"], "credito_fiscal": f["credito"],
+        "percepciones_sufridas": f["percepciones"],
+        "percepciones_banco": f["percepciones_banco"],
+        "posicion": f["posicion"],
+        "a_favor_anterior": f["saldo_favor_anterior"],
+        "a_pagar": f["a_pagar"], "a_favor_final": f["saldo_favor_final"],
+        # `saldo` y `resultado` se mantienen porque ya los usa la pantalla.
+        "saldo": f["a_pagar"] if f["a_pagar"] else f["saldo_favor_final"],
+        "resultado": "a pagar" if f["a_pagar"] else (
+            "a favor" if f["saldo_favor_final"] else "en cero"),
+        "ventas_por_alicuota": d["ventas"], "compras_por_alicuota": d["compras"],
+        "falta": "las retenciones de IVA sufridas no están cargadas: no vienen "
+                 "en Mis Comprobantes",
     })
+
+
+@app.get("/api/c/iva/posicion")
+def api_iva_posicion():
+    """La serie entera, mes a mes, con el saldo a favor encadenado.
+
+    Es la pestaña «Posición de IVA» del módulo Facturas del ERP: se mira la
+    cadena completa, no un mes, porque el arrastre es lo que explica por qué un
+    mes con mucho débito puede terminar sin nada que pagar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    serie = _cadena_iva(con, cli["id"])
+    ini = con.execute("SELECT periodo, a_favor, nota FROM iva_saldo_inicial WHERE cliente_id=?",
+                      (cli["id"],)).fetchone()
+    con.close()
+    ultimo = serie[-1] if serie else None
+    return jsonify({
+        "serie": list(reversed(serie)),          # el mes más nuevo primero
+        "actual": ultimo,
+        "saldo_favor_hoy": ultimo["saldo_favor_final"] if ultimo else 0.0,
+        "total_a_pagar": round(sum(f["a_pagar"] for f in serie), 2),
+        "inicial": dict(ini) if ini else None,
+        "nota": "Posición = débito − crédito − percepciones. Si da negativa "
+                "engrosa el saldo a favor; si da positiva primero consume el "
+                "arrastrado y recién después se paga.",
+        "falta": "No están cargadas las RETENCIONES de IVA sufridas: no vienen "
+                 "en Mis Comprobantes, son otra pantalla de ARCA. A un cliente "
+                 "al que le retienen mucho, esta cuenta le muestra más impuesto "
+                 "del que debe.",
+    })
+
+
+@app.post("/api/c/iva/inicial")
+def api_iva_inicial_set():
+    """Desde qué período liquida el estudio y con cuánto a favor venía.
+
+    Alguien lo tiene que declarar: sale de la última DJ presentada antes de que
+    el estudio tomara al cliente. Sin esto, el arrastre arranca en cero y le
+    hace perder al cliente un crédito que tenía."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    periodo = (b.get("periodo") or "").strip()
+    if not _rango_periodo(periodo):
+        con.close()
+        return jsonify({"error": "periodo debe ser MM/YYYY"}), 400
+    a_favor = _n(b.get("a_favor"))
+    if a_favor < 0:
+        con.close()
+        return jsonify({"error": "el saldo a favor no puede ser negativo"}), 400
+    con.execute(
+        "INSERT INTO iva_saldo_inicial (cliente_id, periodo, a_favor, nota, actualizado) "
+        "VALUES (?,?,?,?,?) ON CONFLICT(cliente_id) DO UPDATE SET "
+        "  periodo=excluded.periodo, a_favor=excluded.a_favor, nota=excluded.nota, "
+        "  actualizado=excluded.actualizado",
+        (cli["id"], periodo, a_favor, b.get("nota"), _hoy()))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/c/dj/base")

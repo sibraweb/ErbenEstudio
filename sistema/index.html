@@ -734,18 +734,34 @@ async function tDoc(){
     </div>`);
 }
 
-/* ══ FACTURAS ══ */
-let fMov = 'venta';
+/* ══ FACTURAS ══
+   Con la estructura del módulo del ERP: los comprobantes, el libro de IVA del
+   período y la POSICIÓN encadenada. Sin la pestaña de obra, que acá no existe.
+
+   La liquidación de IVA vive acá y no en Impuestos: sale de las facturas y es
+   la posición de IVA (Juan, 02/09). En Impuestos quedan los vencimientos. */
+let fMov = 'venta', fTab = 'venta', fPer = null;
+
 async function vFacturas(){
   cargando('Facturas');
+  const tabs = [['venta','Ventas'],['compra','Compras'],['iva','IVA del período'],
+                ['pos','Posición de IVA']];
+  pintar(`<h2>Facturas</h2>
+    <div class="sub">Las ventas llevan actividad y alícuota de IIBB: de ahí sale la DJ.
+      Y de las facturas sale la posición de IVA.</div>
+    <div class="tabs">${tabs.map(([k,t]) =>
+      `<button class="${fTab===k?'on':''}" onclick="fTab='${k}';vFacturas()">${t}</button>`).join('')}</div>
+    <div id="f-panel"><div class="vacio">Cargando…</div></div>`);
+  if (fTab === 'venta' || fTab === 'compra'){ fMov = fTab; fLista(); }
+  else if (fTab === 'iva') fIVA();
+  else fPosicion();
+}
+const panelF = h => { const c = $('#f-panel'); if (c) c.innerHTML = h; };
+
+async function fLista(){
   const fs = await api('/api/c/facturas?mov=' + fMov);
   const esVenta = fMov === 'venta';
-  pintar(`
-    <h2>Facturas</h2><div class="sub">Las ventas llevan actividad y alícuota de IIBB: de ahí sale la DJ.</div>
-    <div class="tabs">
-      <button class="${esVenta?'on':''}" onclick="fMov='venta';vFacturas()">Ventas</button>
-      <button class="${!esVenta?'on':''}" onclick="fMov='compra';vFacturas()">Compras</button>
-    </div>
+  panelF(`
     <div class="panel"><div class="panel-h"><b>Cargar ${esVenta?'venta':'compra'}</b>
       <button class="g xs" onclick="toggle('#f-alta')">Mostrar / ocultar</button></div>
       <div class="panel-b hide" id="f-alta"><div class="f">
@@ -794,6 +810,103 @@ async function vFacturas(){
             : '<span class="badge b-ok">saldada</span>'}]))}
     </div>` : '<div class="panel"><div class="vacio">Sin comprobantes cargados.</div></div>'}`);
 }
+
+/* ── El libro de IVA de UN mes, para controlarlo contra el papel ── */
+async function fIVA(){
+  const per = fPer || sessionStorage.getItem('ee-per') || periodoHoy();
+  fPer = per;
+  const iva = await api('/api/c/iva?periodo=' + encodeURIComponent(per)).catch(e => ({error:e.message}));
+  panelF(`
+    <div class="panel"><div class="panel-h"><b>Liquidación de IVA</b>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input style="width:110px" id="iva-per" value="${esc(per)}" placeholder="MM/AAAA">
+        <button class="xs" onclick="fPer=val('iva-per');sessionStorage.setItem('ee-per',fPer);fIVA()">Calcular</button></div></div>
+      <div class="panel-b">${iva.error ? `<div class="vacio">${esc(iva.error)}</div>` : `
+        <div class="grid">
+          <div class="card"><div class="k">Débito fiscal (ventas)</div><div class="v sm">${plata(iva.debito_fiscal)}</div></div>
+          <div class="card"><div class="k">Crédito fiscal (compras)</div><div class="v sm">${plata(iva.credito_fiscal)}</div></div>
+          <div class="card"><div class="k">Percepciones sufridas</div><div class="v sm">${plata(iva.percepciones_sufridas)}</div>
+            <div class="mini">${plata(iva.percepciones_banco)} del banco</div></div>
+          <div class="card"><div class="k">Posición del mes</div>
+            <div class="v sm ${iva.posicion>0?'neg':'pos'}">${plata(iva.posicion)}</div>
+            <div class="mini">antes del arrastre</div></div>
+          <div class="card"><div class="k">Saldo a favor anterior</div>
+            <div class="v sm pos">${plata(iva.a_favor_anterior)}</div>
+            <div class="mini">viene del mes pasado</div></div>
+          <div class="card"><div class="k">${iva.a_pagar ? 'A PAGAR' : 'Saldo a favor'}</div>
+            <div class="v ${iva.a_pagar?'neg':'pos'}">${plata(iva.a_pagar || iva.a_favor_final)}</div></div>
+        </div>
+        <div class="aviso" style="margin-top:14px">La posición del mes primero <b>consume el saldo a
+          favor arrastrado</b> y recién después se paga. ⚠ ${esc(iva.falta)}.</div>
+        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-top:14px">
+          <div><div class="mini" style="margin-bottom:6px">Ventas por alícuota</div>
+            ${iva.ventas_por_alicuota.length ? tabla(['Alíc.','Neto','IVA'],
+              iva.ventas_por_alicuota.map(v => [v.alicuota+'%', {n:plata(v.neto)}, {n:plata(v.iva)}]))
+              : '<div class="vacio">Sin ventas.</div>'}</div>
+          <div><div class="mini" style="margin-bottom:6px">Compras por alícuota</div>
+            ${iva.compras_por_alicuota.length ? tabla(['Alíc.','Neto','IVA'],
+              iva.compras_por_alicuota.map(v => [v.alicuota+'%', {n:plata(v.neto)}, {n:plata(v.iva)}]))
+              : '<div class="vacio">Sin compras.</div>'}</div>
+        </div>`}</div>
+    </div>`);
+}
+
+/* ── LA POSICIÓN: la cadena entera, que es lo único que se puede auditar ──
+   Traída del módulo Facturas del ERP. Un mes suelto no dice nada: el saldo a
+   favor de julio depende de todos los meses anteriores. */
+async function fPosicion(){
+  const p = await api('/api/c/iva/posicion');
+  panelF(`
+    <div class="grid">
+      <div class="card"><div class="k">Saldo a favor hoy</div>
+        <div class="v sm pos">${plata(p.saldo_favor_hoy)}</div>
+        <div class="mini">arrastrado al ${(p.actual||{}).periodo || '—'}</div></div>
+      <div class="card"><div class="k">Meses liquidados</div><div class="v">${p.serie.length}</div></div>
+      <div class="card"><div class="k">Total a pagar</div>
+        <div class="v sm ${p.total_a_pagar?'neg':''}">${plata(p.total_a_pagar)}</div>
+        <div class="mini">suma de los meses con posición a pagar</div></div>
+      <div class="card"><div class="k">Arranca en</div>
+        <div class="v sm">${p.inicial ? esc(p.inicial.periodo) : ((p.serie[p.serie.length-1]||{}).periodo || '—')}</div>
+        <div class="mini">${p.inicial ? 'con ' + plata(p.inicial.a_favor) + ' a favor' : 'sin saldo declarado'}</div></div>
+    </div>
+    <div class="aviso" style="margin-top:16px;border-left-color:var(--bad)">
+      <b>Falta un dato que ningún comprobante trae.</b> ${esc(p.falta)}</div>
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Mes a mes</b>
+      <button class="g xs" onclick="declararInicial()">Declarar el saldo que venía de antes</button></div>
+      ${p.serie.length ? tabla(['Período','Débito','Crédito','Percep.','Posición','A favor anterior','A PAGAR','A favor final'],
+        p.serie.map(f => [
+          `<b>${esc(f.periodo)}</b><div class="mini">${f.ventas} vta · ${f.compras} cmp</div>`,
+          {n: f.debito ? plata(f.debito) : '—'},
+          {n: f.credito ? plata(f.credito) : '—'},
+          {n: f.percepciones ? plata(f.percepciones) : '—'},
+          {n: `<span class="${f.posicion>0?'neg':'pos'}">${plata(f.posicion)}</span>`},
+          {n: f.saldo_favor_anterior ? `<span class="pos">${plata(f.saldo_favor_anterior)}</span>` : '—'},
+          {n: f.a_pagar ? `<b class="neg">${plata(f.a_pagar)}</b>` : '—'},
+          {n: f.saldo_favor_final ? `<span class="pos">${plata(f.saldo_favor_final)}</span>` : '—'}]))
+        : '<div class="vacio">Sin comprobantes cargados.</div>'}
+      <div class="panel-b"><div class="mini">${esc(p.nota)}</div></div>
+    </div>`);
+}
+
+/* El saldo a favor con el que el cliente llegó al estudio no está en ningún
+   comprobante: sale de la última DJ que presentó antes. Si no se declara, el
+   arrastre arranca en cero y le hace perder un crédito que tenía. */
+async function declararInicial(){
+  const r = await modal('El saldo a favor que venía de antes',
+    'Sale de la última DJ de IVA presentada antes de que el estudio tomara al cliente. '
+    + 'Sin esto, el arrastre arranca en cero.', [
+    {id:'md-per', label:'Primer período que liquida el estudio (MM/AAAA)',
+     html:'<input id="md-per" placeholder="01/2026">', ancho:''},
+    {id:'md-fav', label:'Saldo a favor que traía', html:'<input id="md-fav" type="number" step="0.01" value="0">'},
+    {id:'md-nota', label:'De dónde sale (opcional)', html:'<input id="md-nota" placeholder="DJ 12/2025">'}
+  ], 'Guardar');
+  if (!r) return;
+  try{ await post('/api/c/iva/inicial', {periodo:r['md-per'], a_favor:parseFloat(r['md-fav'])||0,
+        nota:r['md-nota']});
+    toast('Guardado — la cadena se recalcula'); fPosicion();
+  }catch(e){ toast(e.message, true); }
+}
+
 function calcIVA(){
   const neto = num('nf-neto') || 0, a = parseFloat(val('nf-alic')) || 0;
   $('#nf-iva').value = (neto * a / 100).toFixed(2); calcTotal();
@@ -818,36 +931,11 @@ async function altaFactura(){
 /* ══ IMPUESTOS ══ */
 async function vImpuestos(){
   cargando('Impuestos');
-  const per = sessionStorage.getItem('ee-per') || periodoHoy();
-  const [vs, iva] = await Promise.all([
-    api('/api/c/vencimientos'),
-    api('/api/c/iva?periodo=' + encodeURIComponent(per)).catch(e => ({error:e.message})),
-  ]);
+  const vs = await api('/api/c/vencimientos');
   pintar(`
-    <h2>Impuestos</h2><div class="sub">Vencimientos y liquidación de IVA del período.</div>
-    <div class="panel"><div class="panel-h"><b>Liquidación de IVA</b>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input style="width:110px" id="iva-per" value="${esc(per)}" placeholder="MM/AAAA">
-        <button class="xs" onclick="verIVA()">Calcular</button></div></div>
-      <div class="panel-b">${iva.error ? `<div class="vacio">${esc(iva.error)}</div>` : `
-        <div class="grid">
-          <div class="card"><div class="k">Débito fiscal (ventas)</div><div class="v sm">${plata(iva.debito_fiscal)}</div></div>
-          <div class="card"><div class="k">Crédito fiscal (compras)</div><div class="v sm">${plata(iva.credito_fiscal)}</div></div>
-          <div class="card"><div class="k">Percepciones sufridas</div><div class="v sm">${plata(iva.percepciones_sufridas)}</div></div>
-          <div class="card"><div class="k">Saldo ${esc(iva.resultado)}</div>
-            <div class="v ${iva.resultado==='a pagar'?'neg':'pos'}">${plata(iva.saldo)}</div></div>
-        </div>
-        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-top:14px">
-          <div><div class="mini" style="margin-bottom:6px">Ventas por alícuota</div>
-            ${iva.ventas_por_alicuota.length ? tabla(['Alíc.','Neto','IVA'],
-              iva.ventas_por_alicuota.map(v => [v.alicuota+'%', {n:plata(v.neto)}, {n:plata(v.iva)}]))
-              : '<div class="vacio">Sin ventas.</div>'}</div>
-          <div><div class="mini" style="margin-bottom:6px">Compras por alícuota</div>
-            ${iva.compras_por_alicuota.length ? tabla(['Alíc.','Neto','IVA'],
-              iva.compras_por_alicuota.map(v => [v.alicuota+'%', {n:plata(v.neto)}, {n:plata(v.iva)}]))
-              : '<div class="vacio">Sin compras.</div>'}</div>
-        </div>`}</div>
-    </div>
+    <h2>Impuestos</h2><div class="sub">Los vencimientos y su ciclo de vida.
+      La <b>liquidación de IVA</b> se mudó a <a href="#facturas">Facturas</a>: sale de los
+      comprobantes y es la posición de IVA.</div>
     <div class="panel"><div class="panel-h"><b>Vencimientos</b>
       <button class="g xs" onclick="toggle('#v-alta')">Cargar uno</button></div>
       <div class="panel-b hide" id="v-alta"><div class="f">
@@ -868,7 +956,6 @@ async function vImpuestos(){
         : '<div class="vacio">Sin vencimientos. Los cargan los jobs de la suite o se agregan a mano.</div>'}
     </div>`);
 }
-function verIVA(){ sessionStorage.setItem('ee-per', val('iva-per')); vImpuestos(); }
 async function altaVenc(){
   try{
     await post('/api/c/vencimientos', {fuente: val('nv-fuente'), impuesto: val('nv-imp'),

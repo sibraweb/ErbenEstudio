@@ -176,6 +176,40 @@ queda **a cuenta** y se imputa después por FIFO.
 corrección que el ERP ya hizo: con `prompt()` había que transcribir el número de
 cuenta o la razón social, y así se cargan cuentas y entidades repetidas.
 
+### Facturas: los comprobantes y la POSICIÓN de IVA
+
+Traído del módulo Facturas del ERP, con sus pestañas menos la de obra:
+**Ventas · Compras · IVA del período · Posición de IVA**.
+
+La liquidación de IVA vive acá y no en Impuestos (Juan, 02/09: *"el módulo de
+facturas tiene eso, es la posición de IVA"*). Tiene sentido: sale de los
+comprobantes. En Impuestos quedan los vencimientos.
+
+**El saldo a favor se arrastra.** Es la parte que no se puede improvisar y que
+el ERP ya tenía resuelta (`_cadena_iva`):
+
+```
+posición = débito − crédito − percepciones
+  posición <= 0     ->  el excedente ENGROSA el saldo a favor
+  alcanza el saldo  ->  se consume y no se paga nada
+  no alcanza        ->  se paga la diferencia y el saldo queda en cero
+```
+
+⚠ Hasta el 02/09 cada mes se liquidaba solo. Se vio con datos reales: mayo daba
+a favor $434.419 y junio pedía pagar el bruto, ignorando ese crédito. Por eso
+la pantalla muestra la **cadena entera**, no un mes: un mes aislado no se puede
+auditar.
+
+**El saldo inicial es un dato declarado** (`iva_saldo_inicial`). El crédito que
+el cliente traía de la última DJ antes de llegar al estudio no está en ningún
+comprobante; si no se declara, el arrastre arranca en cero y se lo hace perder.
+
+⚠⚠ **FALTAN LAS RETENCIONES DE IVA SUFRIDAS.** No vienen en Mis Comprobantes —
+son otra pantalla de ARCA. A un cliente al que le retienen mucho, esta cuenta le
+muestra **más impuesto del que debe**. Las percepciones sí entran: las de las
+facturas de compra (*Otros Tributos*) y las que cobra el banco, si el concepto
+del movimiento las nombra.
+
 ### Pagos: se cancelan FACTURAS, y nada más
 
 El comprobante tiene una dirección (un **pago** cancela compras, una **cobranza**
