@@ -851,6 +851,100 @@ async function fIVA(){
     </div>`);
 }
 
+/* ── EL GRÁFICO: acumulado a favor (línea) + posición del mes (barras) ──
+   Traído del módulo Facturas del ERP, con la paleta de ERBEN.
+
+   ⚠ EL SALDO A FAVOR NO ES UNA BUENA NOTICIA (Juan, 31/08: «cuando la línea
+   anda por posición a favor que esté roja»). La línea nunca es negativa: es
+   plata que YA se pagó de más y queda parada en ARCA hasta que un débito la
+   consuma. Pintarla como algo bueno la lee como "vamos bien"; es capital
+   inmovilizado. Por eso el tramo va en rojo en cuanto alguna de sus dos puntas
+   tiene saldo, y en azul solo cuando cierra en cero.
+
+   ⚠ Las dos escalas son distintas A PROPÓSITO: el acumulado es mucho más
+   grande que el mes suelto y con una sola escala las barras no se verían. El
+   aire de arriba (34px, no 18) es para el título de cada eje: sin eso los dos
+   topes quedan pegados y se leen como si fueran el mismo número — pasó en el
+   ERP y costó un rato entender que los dos estaban bien. */
+function graficoIVA(serie){
+  if (!serie.length) return '<div class="vacio">Sin meses para graficar.</div>';
+  const datos = [...serie].reverse();               // del más viejo al más nuevo
+  const W = Math.max(680, datos.length * 54), H = 316;
+  const M = {arriba:34, abajo:46, izq:84, der:84};
+  const ancho = W - M.izq - M.der, alto = H - M.arriba - M.abajo;
+
+  const maxAcum = Math.max(...datos.map(f => f.saldo_favor_final), 1);
+  const topePos = Math.max(...datos.map(f => Math.abs(f.posicion)), 1);
+  const x = i => M.izq + (datos.length === 1 ? ancho/2 : (i*ancho)/(datos.length-1));
+  const yAcum = v => M.arriba + alto - (v/maxAcum)*alto;
+  const cero = M.arriba + alto/2;                   // el 0 de las barras, al medio
+  const yPos = v => cero - (v/topePos)*(alto/2);
+
+  const ROJO = '#E28873', AZUL = '#7FB2DA', LINEA = 'var(--bor)', MUT = 'var(--mut)';
+  const enFavor = v => (v||0) > 0.01;
+
+  const ab = Math.min(26, ancho/Math.max(datos.length,1)*0.5);
+  const barras = datos.map((f,i) => {
+    const y = yPos(f.posicion), h = Math.abs(y - cero);
+    return `<rect x="${x(i)-ab/2}" y="${Math.min(y,cero)}" width="${ab}"
+        height="${Math.max(h,1)}" fill="${f.posicion>0?ROJO:AZUL}" opacity=".75"
+      ><title>${f.periodo}\nPosición del mes: ${plata(f.posicion)}${
+        f.a_pagar ? '\nA pagar: '+plata(f.a_pagar) : ''}</title></rect>`;
+  }).join('');
+
+  const linea = datos.slice(1).map((f,k) => {
+    const i = k+1, a = datos[i-1];
+    const color = (enFavor(a.saldo_favor_final) || enFavor(f.saldo_favor_final)) ? ROJO : AZUL;
+    return `<path d="M${x(i-1)},${yAcum(a.saldo_favor_final)} L${x(i)},${yAcum(f.saldo_favor_final)}"
+      fill="none" stroke="${color}" stroke-width="2.5"/>`;
+  }).join('');
+  const puntos = datos.map((f,i) => `<circle cx="${x(i)}" cy="${yAcum(f.saldo_favor_final)}" r="3.5"
+      fill="${enFavor(f.saldo_favor_final)?ROJO:AZUL}"
+    ><title>${f.periodo}\nSaldo a favor acumulado: ${plata(f.saldo_favor_final)}${
+      enFavor(f.saldo_favor_final) ? '\n(plata inmovilizada en ARCA)' : ''}</title></circle>`).join('');
+
+  // Una etiqueta cada N para que no se pisen cuando son 20 meses.
+  const cada = Math.ceil(datos.length/14);
+  const etiq = datos.map((f,i) => i % cada ? '' : `<text x="${x(i)}" y="${H-26}"
+      text-anchor="middle" font-size="9" fill="${MUT}"
+      transform="rotate(-40 ${x(i)} ${H-26})">${f.periodo}</text>`).join('');
+
+  const ult = datos[datos.length-1], colUlt = enFavor(ult.saldo_favor_final) ? ROJO : AZUL;
+  return `<div style="overflow-x:auto">
+    <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%">
+      <line x1="${M.izq}" y1="${cero}" x2="${W-M.der}" y2="${cero}" stroke="${LINEA}"/>
+      <line x1="${M.izq}" y1="${M.arriba}" x2="${M.izq}" y2="${M.arriba+alto}" stroke="${LINEA}"/>
+      <line x1="${W-M.der}" y1="${M.arriba}" x2="${W-M.der}" y2="${M.arriba+alto}" stroke="${LINEA}"/>
+      ${barras}${linea}${puntos}${etiq}
+      <!-- Anclado a la IZQUIERDA y no al eje: con text-anchor="end" el rótulo
+           se salía del viewBox y quedaba cortado ("CUMULADO" en vez de
+           "ACUMULADO"). -->
+      <text x="2" y="${M.arriba-12}" font-size="9"
+        font-weight="600" fill="${enFavor(maxAcum)?ROJO:AZUL}">A FAVOR ACUMULADO (línea)</text>
+      <text x="${W-M.der+6}" y="${M.arriba-12}" font-size="9" font-weight="600"
+        fill="${MUT}">MES (barras)</text>
+      <line x1="${M.izq-4}" y1="${M.arriba}" x2="${M.izq}" y2="${M.arriba}" stroke="${enFavor(maxAcum)?ROJO:AZUL}"/>
+      <text x="${M.izq-6}" y="${M.arriba+3}" text-anchor="end" font-size="9"
+        fill="${enFavor(maxAcum)?ROJO:AZUL}">${plata(maxAcum)}</text>
+      <text x="${M.izq-6}" y="${M.arriba+alto+3}" text-anchor="end" font-size="9" fill="${MUT}">0</text>
+      <line x1="${W-M.der}" y1="${yPos(topePos)}" x2="${W-M.der+4}" y2="${yPos(topePos)}" stroke="${ROJO}"/>
+      <text x="${W-M.der+6}" y="${yPos(topePos)+3}" font-size="9" fill="${ROJO}">${plata(topePos)}</text>
+      <line x1="${W-M.der}" y1="${yPos(-topePos)}" x2="${W-M.der+4}" y2="${yPos(-topePos)}" stroke="${AZUL}"/>
+      <text x="${W-M.der+6}" y="${yPos(-topePos)+3}" font-size="9" fill="${AZUL}">${plata(-topePos)}</text>
+      <text x="${W-M.der+6}" y="${cero+3}" font-size="9" fill="${MUT}">0</text>
+      <text x="${W-M.der-8}" y="${yAcum(ult.saldo_favor_final)-8}" text-anchor="end"
+        font-size="11" font-weight="700" fill="${colUlt}">${plata(ult.saldo_favor_final)}</text>
+    </svg>
+    <div class="mini" style="margin-top:6px">
+      <b style="color:${ROJO}">— línea</b>: saldo a favor acumulado (eje izquierdo) ·
+      <b>barras</b>: posición de cada mes (eje derecho) — <span style="color:${ROJO}">roja</span> se paga,
+      <span style="color:${AZUL}">azul</span> queda a favor. Pasá el mouse para ver los números.
+      <br>Las dos escalas son distintas a propósito: el acumulado es mucho más grande que el mes
+      suelto y con una sola escala las barras no se verían.
+      <br><b>La línea en rojo no es buena noticia:</b> es plata ya pagada que quedó parada en ARCA.
+    </div></div>`;
+}
+
 /* ── LA POSICIÓN: la cadena entera, que es lo único que se puede auditar ──
    Traída del módulo Facturas del ERP. Un mes suelto no dice nada: el saldo a
    favor de julio depende de todos los meses anteriores. */
@@ -871,6 +965,8 @@ async function fPosicion(){
     </div>
     <div class="aviso" style="margin-top:16px;border-left-color:var(--bad)">
       <b>Falta un dato que ningún comprobante trae.</b> ${esc(p.falta)}</div>
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Acumulado a favor y posición de cada mes</b></div>
+      <div class="panel-b">${graficoIVA(p.serie)}</div></div>
     <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Mes a mes</b>
       <button class="g xs" onclick="declararInicial()">Declarar el saldo que venía de antes</button></div>
       ${p.serie.length ? tabla(['Período','Débito','Crédito','Percep.','Posición','A favor anterior','A PAGAR','A favor final'],
