@@ -289,6 +289,23 @@ def _migrar(con):
             CREATE INDEX ix_iibbded ON iibb_deducciones(cliente_id, periodo);""")
         con.commit()
 
+    # ── los VEP/DEBIN: con qué se pagó cada impuesto ──
+    if "pagos_fiscales" not in tablas:
+        print("  migrando: los pagos fiscales (VEP, DEBIN)…")
+        con.executescript("""
+            CREATE TABLE pagos_fiscales (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                numero TEXT NOT NULL, medio TEXT, concepto TEXT,
+                impuesto TEXT, periodo TEXT, importe REAL NOT NULL,
+                fecha_pago TEXT, estado TEXT,
+                vencimiento_id INTEGER REFERENCES vencimientos(id),
+                movimiento_id INTEGER REFERENCES movimientos_banco(id),
+                origen TEXT NOT NULL DEFAULT 'portal', actualizado TEXT,
+                UNIQUE (cliente_id, numero));
+            CREATE INDEX ix_pagofis ON pagos_fiscales(cliente_id, fecha_pago);""")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -773,6 +790,97 @@ def api_cuentas_alta():
     cid_cta = cur.lastrowid
     con.close()
     return jsonify({"ok": True, "id": cid_cta})
+
+
+@app.get("/api/c/bancos/resumen-mensual")
+def api_bancos_resumen_mensual():
+    """El mes del banco: qué entró, qué salió, y cuánto de eso está explicado.
+
+    Juan (05/09): *"en banco ver el depósito del mes"*. Hasta ahora los
+    movimientos se veían en una lista corrida: para saber cuánto se depositó en
+    agosto había que sumar a mano.
+
+    Lo importante no es el total: es **cuánto de ese total tiene comprobante
+    detrás**. Un mes con $10.000.000 de depósitos y la mitad sin explicar no es
+    un buen mes, es medio mes sin contabilizar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    q = ("SELECT substr(m.fecha,1,7) AS mes, c.id AS cuenta_id, c.banco, "
+         "  ROUND(SUM(CASE WHEN m.importe > 0 THEN m.importe ELSE 0 END),2) AS acredita, "
+         "  ROUND(SUM(CASE WHEN m.importe < 0 THEN -m.importe ELSE 0 END),2) AS debita, "
+         "  ROUND(SUM(m.importe),2) AS neto, COUNT(*) AS movimientos, "
+         "  SUM(CASE WHEN m.conciliado THEN 1 ELSE 0 END) AS conciliados, "
+         "  ROUND(SUM(CASE WHEN m.conciliado THEN ABS(m.importe) ELSE 0 END),2) AS explicado, "
+         "  ROUND(SUM(ABS(m.importe)),2) AS movido "
+         "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+         "WHERE m.cliente_id=?")
+    args = [cid]
+    if request.args.get("cuenta_id"):
+        q += " AND m.cuenta_id=?"
+        args.append(request.args["cuenta_id"])
+    meses = filas(con.execute(q + " GROUP BY 1,2 ORDER BY 1 DESC, 3", args))
+
+    # Los depósitos de cheques del mes, que es lo que se pregunta primero.
+    dep = {r["mes"]: r for r in con.execute(
+        "SELECT substr(deposito_fecha,1,7) AS mes, COUNT(*) AS n, "
+        "  ROUND(SUM(importe),2) AS total FROM cheques "
+        "WHERE cliente_id=? AND deposito_fecha IS NOT NULL GROUP BY 1", (cid,))}
+
+    for m in meses:
+        m["sin_explicar"] = round(_n(m["movido"]) - _n(m["explicado"]), 2)
+        d = dep.get(m["mes"])
+        m["cheques_depositados"] = (d["n"] if d else 0)
+        m["cheques_depositados_importe"] = _n(d["total"]) if d else 0.0
+    con.close()
+    return jsonify({"meses": meses,
+                    "acredita": round(sum(_n(m["acredita"]) for m in meses), 2),
+                    "debita": round(sum(_n(m["debita"]) for m in meses), 2),
+                    "sin_explicar": round(sum(m["sin_explicar"] for m in meses), 2)})
+
+
+@app.get("/api/c/bancos/mes/<mes>")
+def api_bancos_mes(mes):
+    """El detalle de un mes: cada movimiento con lo que lo explica.
+
+    `mes` en formato AAAA-MM."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not re.fullmatch(r"\d{4}-\d{2}", mes or ""):
+        con.close()
+        return jsonify({"error": "el mes va como AAAA-MM"}), 400
+    r = filas(con.execute(
+        "SELECT m.*, c.banco, "
+        "  (SELECT p.numero FROM pagos p WHERE p.id=m.pago_id) AS recibo, "
+        "  (SELECT v.impuesto || ' ' || v.periodo FROM vencimientos v "
+        "   WHERE v.movimiento_id=m.id) AS impuesto, "
+        "  (SELECT pf.numero FROM pagos_fiscales pf WHERE pf.movimiento_id=m.id) AS vep, "
+        "  (SELECT ch.numero FROM conciliaciones co JOIN cheques ch ON ch.id=co.cheque_id "
+        "   WHERE co.movimiento_id=m.id) AS cheque "
+        "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "WHERE m.cliente_id=? AND substr(m.fecha,1,7)=? ORDER BY m.fecha, m.id",
+        (cli["id"], mes)))
+    con.close()
+    for x in r:
+        # Qué lo explica, en una línea. Si está vacía, es un hueco.
+        partes = []
+        if x["recibo"]:
+            partes.append(f"recibo {x['recibo']}")
+        if x["impuesto"]:
+            partes.append(x["impuesto"] + (f" · VEP {x['vep']}" if x["vep"] else ""))
+        if x["cheque"]:
+            partes.append(f"cheque Nº{x['cheque']}")
+        x["explica"] = " · ".join(partes)
+    return jsonify({"mes": mes, "movimientos": r,
+                    "acredita": round(sum(_n(x["importe"]) for x in r if x["importe"] > 0), 2),
+                    "debita": round(sum(-_n(x["importe"]) for x in r if x["importe"] < 0), 2),
+                    "sin_explicar": len([x for x in r if not x["explica"]])})
 
 
 @app.get("/api/c/movimientos")
@@ -1718,6 +1826,145 @@ def api_sin_contraparte():
         "total": round(sum(g["total"] for g in grupos), 2),
         "corte": hoy,
     })
+
+
+@app.get("/api/c/pagos-fiscales")
+def api_pagos_fiscales():
+    """Los VEP y DEBIN: con qué se pagó cada impuesto."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    r = filas(con.execute(
+        "SELECT pf.*, "
+        "  (SELECT v.impuesto || ' ' || v.periodo FROM vencimientos v "
+        "   WHERE v.id=pf.vencimiento_id) AS obligacion, "
+        "  (SELECT m.fecha FROM movimientos_banco m WHERE m.id=pf.movimiento_id) AS debito_fecha, "
+        "  (SELECT c.banco FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "   WHERE m.id=pf.movimiento_id) AS debito_banco "
+        "FROM pagos_fiscales pf WHERE pf.cliente_id=? "
+        "ORDER BY pf.fecha_pago DESC, pf.id DESC", (cli["id"],)))
+    con.close()
+    return jsonify({
+        "veps": r, "total": round(sum(_n(x["importe"]) for x in r), 2),
+        # Un VEP sin el débito atado es un pago que nadie puede probar contra el
+        # banco; uno sin obligación es plata que salió sin saber qué cancela.
+        "sin_debito": len([x for x in r if not x["movimiento_id"]]),
+        "sin_obligacion": len([x for x in r if not x["vencimiento_id"]]),
+    })
+
+
+@app.post("/api/c/pagos-fiscales")
+def api_pagos_fiscales_cargar():
+    """Carga los VEP relevados del portal, y los ata a lo que corresponde.
+
+    Dos ataduras, y ninguna adivina:
+      · a la OBLIGACIÓN, si el impuesto y el período coinciden exactamente;
+      · al DÉBITO del banco, si hay UNO solo con el mismo importe y fecha
+        cercana. Con dos candidatos no elige — la misma regla que rige toda la
+        conciliación acá.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid = cli["id"]
+    b = request.get_json(force=True)
+    veps = b.get("veps") or []
+    cargados = ya = con_obl = con_deb = 0
+
+    for v in veps:
+        numero = re.sub(r"\D", "", str(v.get("numero") or ""))
+        if not numero:
+            continue
+        if con.execute("SELECT 1 FROM pagos_fiscales WHERE cliente_id=? AND numero=?",
+                       (cid, numero)).fetchone():
+            ya += 1
+            continue
+        imp, per = v.get("impuesto"), v.get("periodo")
+        importe, fecha = _n(v.get("importe")), v.get("fecha_pago")
+
+        venc_id = None
+        if imp and per:
+            f = con.execute("SELECT id FROM vencimientos WHERE cliente_id=? AND impuesto=? "
+                            "AND periodo=?", (cid, imp, per)).fetchone()
+            venc_id = f["id"] if f else None
+
+        # El débito: mismo importe, dentro de 5 días. Un VEP se paga el día que
+        # se genera o al siguiente, así que la ventana es corta a propósito —
+        # con una ancha, dos impuestos del mismo monto se confunden.
+        mov_id = None
+        if importe > 0 and fecha:
+            cand = con.execute(
+                "SELECT id FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
+                "AND ABS(ABS(importe) - ?) < 0.01 "
+                "AND ABS(JULIANDAY(fecha) - JULIANDAY(?)) <= 5",
+                (cid, importe, fecha)).fetchall()
+            if len(cand) == 1:
+                mov_id = cand[0]["id"]
+                con.execute("UPDATE movimientos_banco SET conciliado=1 WHERE id=?", (mov_id,))
+
+        con.execute(
+            "INSERT INTO pagos_fiscales (cliente_id, numero, medio, concepto, impuesto, "
+            " periodo, importe, fecha_pago, estado, vencimiento_id, movimiento_id, "
+            " origen, actualizado) VALUES (?,?,?,?,?,?,?,?,?,?,?,'portal',?)",
+            (cid, numero, v.get("medio"), v.get("concepto"), imp, per, importe,
+             fecha, v.get("estado"), venc_id, mov_id, _hoy()))
+        cargados += 1
+        con_obl += 1 if venc_id else 0
+        con_deb += 1 if mov_id else 0
+
+        # Si el VEP dice «Pagado» y encontró su obligación, esa obligación pasa
+        # a pagada con respaldo: el VEP ES la prueba.
+        if venc_id and str(v.get("estado", "")).lower().startswith("pag"):
+            con.execute("UPDATE vencimientos SET estado='pagado', movimiento_id=COALESCE(?, movimiento_id), "
+                        " actualizado=? WHERE id=?", (mov_id, _hoy(), venc_id))
+
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "cargados": cargados, "ya_estaban": ya,
+                    "con_obligacion": con_obl, "con_debito": con_deb})
+
+
+@app.post("/api/c/pagos-fiscales/<int:pfid>/atar")
+def api_pago_fiscal_atar(pfid):
+    """Atar un VEP a mano: a su obligación, a su débito, o a las dos."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    pf = _de_este_cliente(con, "pagos_fiscales", pfid, cli["id"])
+    if not pf:
+        con.close()
+        return jsonify({"error": "VEP inexistente para este cliente"}), 404
+    b = request.get_json(force=True)
+    if b.get("vencimiento_id") and not _de_este_cliente(con, "vencimientos",
+                                                        b["vencimiento_id"], cli["id"]):
+        con.close()
+        return jsonify({"error": "obligación inexistente para este cliente"}), 400
+    if b.get("movimiento_id"):
+        mov = _de_este_cliente(con, "movimientos_banco", b["movimiento_id"], cli["id"])
+        if not mov:
+            con.close()
+            return jsonify({"error": "movimiento inexistente para este cliente"}), 400
+        if mov["importe"] >= 0:
+            con.close()
+            return jsonify({"error": "un impuesto se paga con un DÉBITO, y ese "
+                                     "movimiento acredita"}), 400
+        con.execute("UPDATE movimientos_banco SET conciliado=1 WHERE id=?", (mov["id"],))
+    con.execute("UPDATE pagos_fiscales SET vencimiento_id=COALESCE(?, vencimiento_id), "
+                " movimiento_id=COALESCE(?, movimiento_id), actualizado=? WHERE id=?",
+                (b.get("vencimiento_id"), b.get("movimiento_id"), _hoy(), pfid))
+    if b.get("vencimiento_id"):
+        con.execute("UPDATE vencimientos SET estado='pagado', movimiento_id=COALESCE(?, movimiento_id), "
+                    " actualizado=? WHERE id=?",
+                    (b.get("movimiento_id"), _hoy(), b["vencimiento_id"]))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/c/tesoreria/impuestos")
@@ -2848,6 +3095,273 @@ def api_calendario():
     return jsonify(lineas)
 
 
+def _nodo(clase, id_, titulo, detalle=None, importe=None, fecha=None, estado=None):
+    return {"clase": clase, "id": id_, "titulo": titulo, "detalle": detalle,
+            "importe": importe, "fecha": fecha, "estado": estado, "hijos": []}
+
+
+def _cad_factura(con, cid, fid, visto):
+    f = con.execute(
+        "SELECT f.*, m.razon_social FROM facturas f "
+        "JOIN entidades_cliente e ON e.id=f.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE f.id=? AND f.cliente_id=?",
+        (fid, cid)).fetchone()
+    if not f:
+        return None
+    n = _nodo("factura", fid,
+              f"{f['mov'].capitalize()} {f['tipo']} {f['punto_venta'] or ''}-{f['numero'] or ''}",
+              f["razon_social"], f["total"], f["fecha"])
+    # de la factura al recibo que la cancela
+    for a in con.execute("SELECT pago_id, importe FROM pago_aplicaciones WHERE factura_id=?",
+                         (fid,)):
+        h = _cad_pago(con, cid, a["pago_id"], visto)
+        if h:
+            h["aplica"] = _n(a["importe"])
+            n["hijos"].append(h)
+    if not n["hijos"]:
+        n["falta"] = "el pago que la cancele"
+    return n
+
+
+def _cad_pago(con, cid, pid, visto):
+    if ("pago", pid) in visto:
+        return _nodo("pago", pid, f"recibo #{pid}", "(ya mostrado arriba)")
+    visto.add(("pago", pid))
+    p = con.execute(
+        "SELECT p.*, m.razon_social FROM pagos p JOIN entidades_cliente e ON e.id=p.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE p.id=? AND p.cliente_id=?",
+        (pid, cid)).fetchone()
+    if not p:
+        return None
+    n = _nodo("pago", pid,
+              ("Cobranza " if p["direccion"] == "cobro" else "Orden de pago ")
+              + (p["numero"] or f"#{pid}"),
+              p["razon_social"], p["total"], p["fecha"])
+    # el recibo se paga con: efectivo, banco o cheques
+    for m in con.execute("SELECT * FROM pago_medios WHERE pago_id=?", (pid,)):
+        # Si ya se mostró, se SALTEA en vez de repetirlo: el eco «(ya mostrado
+        # arriba)» apuntando al documento por el que uno entró no agrega nada
+        # y hace parecer que el árbol es más largo de lo que es.
+        if m["movimiento_id"]:
+            if ("banco", m["movimiento_id"]) in visto:
+                continue
+            h = _cad_banco(con, cid, m["movimiento_id"], visto)
+        elif m["cheque_id"]:
+            if ("cheque", m["cheque_id"]) in visto:
+                continue
+            h = _cad_cheque(con, cid, m["cheque_id"], visto)
+        else:
+            h = _nodo("efectivo", None, "Efectivo", None, m["importe"], p["fecha"])
+        if h:
+            n["hijos"].append(h)
+    # y las retenciones, que también cancelan factura aunque no sean plata
+    for r in con.execute("SELECT * FROM retenciones WHERE pago_id=?", (pid,)):
+        n["hijos"].append(_nodo(
+            "retencion", r["id"], r["tipo"].replace("_", " "),
+            ("certificado " + r["certificado"]) if r["certificado"]
+            else "SIN CERTIFICADO — no se puede computar",
+            r["monto"], r["fecha"]))
+    return n
+
+
+def _cad_cheque(con, cid, chid, visto):
+    if ("cheque", chid) in visto:
+        return _nodo("cheque", chid, f"cheque #{chid}", "(ya mostrado arriba)")
+    visto.add(("cheque", chid))
+    ch = con.execute(
+        "SELECT ch.*, COALESCE(ml.razon_social, ch.librador_nombre) AS librador "
+        "FROM cheques ch LEFT JOIN maestro_entidades ml ON ml.cuit=ch.cuit_librador "
+        "WHERE ch.id=? AND ch.cliente_id=?", (chid, cid)).fetchone()
+    if not ch:
+        return None
+    n = _nodo("cheque", chid, f"Cheque {ch['origen']} Nº{ch['numero']}",
+              f"libró {ch['librador'] or 'sin dato'} · {ch['banco'] or 'sin banco'}",
+              ch["importe"], ch["fecha_pago"], ch["estado"])
+    # DE DÓNDE VINO: la cobranza que lo trajo, y de ahí el cliente y su factura
+    if ch["pago_origen_id"] and ("pago", ch["pago_origen_id"]) not in visto:
+        o = _cad_pago(con, cid, ch["pago_origen_id"], visto)
+        if o:
+            o["rol"] = "vino en esta cobranza"
+            n["hijos"].append(o)
+    # A DÓNDE FUE: depositado en un banco, o endosado a un proveedor
+    if ch["deposito_cuenta_id"]:
+        cta = con.execute("SELECT banco, numero FROM cuentas_bancarias WHERE id=?",
+                          (ch["deposito_cuenta_id"],)).fetchone()
+        d = _nodo("deposito", ch["deposito_cuenta_id"],
+                  f"Depositado en {cta['banco'] if cta else '?'}",
+                  cta["numero"] if cta else None, ch["importe"], ch["deposito_fecha"])
+        d["rol"] = "destino"
+        n["hijos"].append(d)
+    if ch["endoso_entidad_id"]:
+        e = con.execute(
+            "SELECT m.razon_social FROM entidades_cliente ec "
+            "JOIN maestro_entidades m ON m.cuit=ec.cuit WHERE ec.id=?",
+            (ch["endoso_entidad_id"],)).fetchone()
+        d = _nodo("endoso", ch["endoso_entidad_id"],
+                  f"Endosado a {e['razon_social'] if e else '?'}", None, ch["importe"])
+        d["rol"] = "destino"
+        n["hijos"].append(d)
+    # y el movimiento del banco donde se acreditó o debitó
+    conc = con.execute("SELECT movimiento_id FROM conciliaciones WHERE cheque_id=?",
+                       (chid,)).fetchone()
+    if conc and conc["movimiento_id"]:
+        h = _cad_banco(con, cid, conc["movimiento_id"], visto)
+        if h:
+            h["rol"] = "se ve en el banco"
+            n["hijos"].append(h)
+    if not n["hijos"]:
+        n["falta"] = ("de qué cobranza vino" if ch["origen"] == "recibido"
+                      else "el débito en el banco")
+    return n
+
+
+def _cad_banco(con, cid, mid, visto):
+    if ("banco", mid) in visto:
+        return _nodo("banco", mid, f"movimiento #{mid}", "(ya mostrado arriba)")
+    visto.add(("banco", mid))
+    mv = con.execute(
+        "SELECT m.*, c.banco FROM movimientos_banco m "
+        "JOIN cuentas_bancarias c ON c.id=m.cuenta_id WHERE m.id=? AND m.cliente_id=?",
+        (mid, cid)).fetchone()
+    if not mv:
+        return None
+    n = _nodo("banco", mid, f"{mv['banco']} · {'acredita' if mv['importe'] > 0 else 'debita'}",
+              mv["descripcion"] or "sin descripción", mv["importe"], mv["fecha"],
+              "conciliado" if mv["conciliado"] else "sin registrar")
+    if mv["cuit_contraparte"]:
+        n["cuit"] = mv["cuit_contraparte"]
+    # DE VUELTA: del movimiento al recibo, y del recibo a la factura y al proveedor
+    if mv["pago_id"] and ("pago", mv["pago_id"]) not in visto:
+        h = _cad_pago(con, cid, mv["pago_id"], visto)
+        if h:
+            h["rol"] = "lo explica este recibo"
+            n["hijos"].append(h)
+            for a in con.execute(
+                    "SELECT a.importe, f.id, f.tipo, f.punto_venta, f.numero, f.fecha, "
+                    "  m2.razon_social FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id "
+                    "  JOIN entidades_cliente e ON e.id=f.entidad_id "
+                    "  JOIN maestro_entidades m2 ON m2.cuit=e.cuit WHERE a.pago_id=?",
+                    (mv["pago_id"],)):
+                h["hijos"].append(_nodo(
+                    "factura", a["id"],
+                    f"{a['tipo']} {a['punto_venta'] or ''}-{a['numero'] or ''}",
+                    a["razon_social"], a["importe"], a["fecha"]))
+    # o el impuesto que pagó
+    # o el cheque que se depositó o se debitó ahí
+    cc = con.execute("SELECT cheque_id FROM conciliaciones WHERE movimiento_id=? "
+                     "AND cheque_id IS NOT NULL", (mid,)).fetchone()
+    if cc and ("cheque", cc["cheque_id"]) not in visto:
+        h = _cad_cheque(con, cid, cc["cheque_id"], visto)
+        if h:
+            h["rol"] = "es este cheque"
+            n["hijos"].append(h)
+    elif cc:
+        # Ya se mostró más arriba: no es un hueco, es el mismo cheque por el
+        # que se entró. Sin esto la cadena decía «falta el comprobante que lo
+        # explique» justo abajo del comprobante que lo explica.
+        n["explicado_por"] = f"el cheque #{cc['cheque_id']}"
+
+    imp = con.execute("SELECT * FROM vencimientos WHERE movimiento_id=?", (mid,)).fetchone()
+    if imp:
+        h = _nodo("impuesto", imp["id"], f"{imp['impuesto']} {imp['periodo']}",
+                  imp["fuente"], imp["importe"], imp["fecha"], imp["estado"])
+        h["rol"] = "pagó este impuesto"
+        vep = con.execute("SELECT * FROM pagos_fiscales WHERE movimiento_id=?", (mid,)).fetchone()
+        if vep:
+            h["hijos"].append(_nodo(
+                "vep", vep["id"], f"VEP {vep['numero']}",
+                f"enviado a {vep['medio'] or '?'} · {vep['concepto'] or ''}",
+                vep["importe"], vep["fecha_pago"], vep["estado"]))
+        n["hijos"].append(h)
+    if not n["hijos"] and not n.get("explicado_por"):
+        n["falta"] = "el comprobante que lo explique"
+    return n
+
+
+def _cad_impuesto(con, cid, vid, visto):
+    v = con.execute("SELECT * FROM vencimientos WHERE id=? AND cliente_id=?",
+                    (vid, cid)).fetchone()
+    if not v:
+        return None
+    n = _nodo("impuesto", vid, f"{v['impuesto']} {v['periodo']}", v["fuente"],
+              v["importe"], v["fecha"], v["estado"])
+    for vep in con.execute("SELECT * FROM pagos_fiscales WHERE vencimiento_id=?", (vid,)):
+        h = _nodo("vep", vep["id"], f"VEP {vep['numero']}",
+                  f"enviado a {vep['medio'] or '?'} · {vep['concepto'] or ''}",
+                  vep["importe"], vep["fecha_pago"], vep["estado"])
+        if vep["movimiento_id"]:
+            b = _cad_banco(con, cid, vep["movimiento_id"], visto)
+            if b:
+                b["rol"] = "el débito"
+                h["hijos"].append(b)
+        else:
+            h["falta"] = "el débito en el banco que lo respalde"
+        n["hijos"].append(h)
+    if v["movimiento_id"] and not n["hijos"]:
+        b = _cad_banco(con, cid, v["movimiento_id"], visto)
+        if b:
+            b["rol"] = "el débito"
+            n["hijos"].append(b)
+    if not n["hijos"]:
+        n["falta"] = ("el VEP y el débito que lo paguen" if v["estado"] != "pagado"
+                      else "el respaldo: figura pagado sin débito atado")
+    return n
+
+
+@app.get("/api/c/documento/<clase>/<int:did>/cadena")
+def api_documento_cadena(clase, did):
+    """LA CADENA ENTERA de cualquier documento, en los dos sentidos.
+
+    Juan (05/09): *"que aparezca qué impuesto pagó, un VEP o un DEBIN, qué
+    proveedor se pagó, qué cheques se cobraron, de quién, de qué factura, de
+    ida y de vuelta, todo conciliado"*.
+
+    Los vínculos ya existían todos en la base. Lo que faltaba era RECORRERLOS
+    hasta el final: la vista Documentos mostraba UN eslabón —la factura decía
+    "cobro REC-1" y ahí terminaba— y el que quería saber en qué banco entró esa
+    plata tenía que ir a buscarlo a mano.
+
+    Se entra por cualquier punta y sale el árbol completo:
+
+        factura  → recibo → medio (banco / cheque / efectivo) + retenciones
+        banco    → recibo → las facturas que cancela → la entidad
+                 → o el impuesto que pagó → su VEP
+        cheque   → la cobranza que lo trajo → el cliente
+                 → y su destino: depositado o endosado
+        impuesto → su VEP → el débito del banco
+
+    Cada nodo que no llega a ninguna parte dice qué le FALTA. Un árbol con
+    hojas sueltas es plata sin explicar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    fn = {"factura": _cad_factura, "pago": _cad_pago, "cheque": _cad_cheque,
+          "banco": _cad_banco, "impuesto": _cad_impuesto}.get(clase)
+    if not fn:
+        con.close()
+        return jsonify({"error": f"no sé recorrer un «{clase}»"}), 400
+    arbol = fn(con, cli["id"], did, set())
+    con.close()
+    if not arbol:
+        return jsonify({"error": "documento inexistente para este cliente"}), 404
+
+    def contar(n):
+        return 1 + sum(contar(h) for h in n["hijos"])
+
+    def faltantes(n, acc):
+        if n.get("falta"):
+            acc.append(f"{n['titulo']}: falta {n['falta']}")
+        for h in n["hijos"]:
+            faltantes(h, acc)
+        return acc
+
+    huecos = faltantes(arbol, [])
+    return jsonify({"arbol": arbol, "eslabones": contar(arbol),
+                    "huecos": huecos, "completa": not huecos})
+
+
 @app.get("/api/c/tesoreria/documentos")
 def api_documentos():
     """LA VISTA ÚNICA: todo lo que el sistema genera y toma, con su estado,
@@ -2945,6 +3459,25 @@ def api_documentos():
             "flujo": "ingreso" if mv["importe"] > 0 else "egreso",
             "estado": "conciliado" if mv["conciliado"] else "sin registrar",
             "se_aplica_con": "RECIBO", "cadena": cadena})
+
+    # Los impuestos son plata que se mueve como cualquier otra: faltaban en la
+    # vista única, y por eso "qué se pagó este mes" no los incluía.
+    for v in con.execute(
+            "SELECT v.*, (SELECT pf.numero FROM pagos_fiscales pf WHERE pf.vencimiento_id=v.id) AS vep, "
+            "  (SELECT pf.medio FROM pagos_fiscales pf WHERE pf.vencimiento_id=v.id) AS vep_medio "
+            "FROM vencimientos v WHERE v.cliente_id=? ORDER BY v.fecha DESC", (cid,)):
+        cadena = []
+        if v["vep"]:
+            cadena.append(f"VEP {v['vep']}" + (f" por {v['vep_medio']}" if v["vep_medio"] else ""))
+        if v["movimiento_id"]:
+            cadena.append(f"débito #{v['movimiento_id']}")
+        docs.append({
+            "clase": "impuesto", "id": v["id"], "fecha": v["fecha"],
+            "detalle": f"{v['impuesto']} {v['periodo']} · {v['fuente']}",
+            "entidad": v["fuente"], "total": v["importe"] or 0,
+            "aplicado": None, "saldo": None, "neto": None, "iva": None,
+            "flujo": "egreso", "estado": v["estado"],
+            "se_aplica_con": "VEP y débito del banco", "cadena": cadena})
 
     docs.sort(key=lambda d: d["fecha"] or "", reverse=True)
     con.close()

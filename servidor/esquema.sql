@@ -427,6 +427,39 @@ CREATE TABLE iibb_deducciones (
 );
 CREATE INDEX ix_iibbded ON iibb_deducciones(cliente_id, periodo);
 
+-- ══ LOS PAGOS FISCALES: VEP, DEBIN, lo que sea ══════════════════════════════
+-- «Qué impuesto se pagó, con un VEP o un DEBIN» (Juan, 05/09). Hasta hoy el
+-- vencimiento se ataba al débito del banco y nada más: se sabía que salió la
+-- plata, no CON QUÉ se pagó ni con qué número. El VEP es el comprobante que
+-- vale ante ARCA, y su número es lo que se busca cuando reclaman.
+--
+-- ⚠ El vínculo va en TRES puntos, y por eso se guarda acá y no como una nota:
+--     el VEP  ->  la OBLIGACIÓN que cancela   (vencimiento_id)
+--     el VEP  ->  el DÉBITO del banco          (movimiento_id)
+--   y de ahí, para atrás: el débito -> el VEP -> el impuesto y el período.
+CREATE TABLE pagos_fiscales (
+    id            INTEGER PRIMARY KEY,
+    cliente_id    INTEGER NOT NULL REFERENCES clientes(id),
+    numero        TEXT NOT NULL,              -- el Nº de VEP
+    -- A dónde se mandó: RED LINK, BANELCO, DEBIN, INTERBANKING… El portal lo
+    -- llama «Enviado a» y es lo que dice CÓMO se pagó.
+    medio         TEXT,
+    concepto      TEXT,                       -- «IVA DJ02/26», «AUTONO08/26»
+    -- Deducidos del concepto cuando se puede, para poder cruzarlo con la
+    -- obligación. Si no se pueden leer, quedan vacíos: no se inventan.
+    impuesto      TEXT,
+    periodo       TEXT,
+    importe       REAL NOT NULL,
+    fecha_pago    TEXT,
+    estado        TEXT,                       -- Pagado | Pendiente | …
+    vencimiento_id INTEGER REFERENCES vencimientos(id),
+    movimiento_id  INTEGER REFERENCES movimientos_banco(id),
+    origen        TEXT NOT NULL DEFAULT 'portal',
+    actualizado   TEXT,
+    UNIQUE (cliente_id, numero)
+);
+CREATE INDEX ix_pagofis ON pagos_fiscales(cliente_id, fecha_pago);
+
 CREATE TABLE djs (
     id            INTEGER PRIMARY KEY,
     cliente_id    INTEGER NOT NULL REFERENCES clientes(id),

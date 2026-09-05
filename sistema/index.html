@@ -712,10 +712,13 @@ let docFlujo = '', docClase = '';
 async function tDoc(){
   const ds = await api('/api/c/tesoreria/documentos');
   const vis = ds.filter(d => (!docFlujo || d.flujo === docFlujo) && (!docClase || d.clase === docClase));
-  const clases = ['factura','pago','cheque','banco'];
+  const clases = ['factura','pago','cheque','banco','impuesto'];
   panelT(`
     <div class="aviso"><b>La escalera:</b> FACTURA se aplica con PAGO · PAGO con efectivo, banco o cheques ·
-      CHEQUE y BANCO con RECIBOS. Cada fila muestra su cadena: cuántos eslabones tiene armados.</div>
+      CHEQUE y BANCO con RECIBOS. Cada fila muestra su cadena: cuántos eslabones tiene armados.
+      <br><b>Hacé clic en cualquier fila</b> y sale la cadena entera, de ida y de vuelta: de la
+      factura al recibo, al banco o al cheque; y del movimiento del banco al recibo, a las
+      facturas que cancela y al proveedor — o al impuesto que pagó y su VEP.</div>
     <div class="panel"><div class="panel-h">
       <div class="row-act">
         <button class="${!docClase?'':'g'} xs" onclick="docClase='';tDoc()">Todos</button>
@@ -736,9 +739,59 @@ async function tDoc(){
           {n: d.neto == null ? '—' : plata(d.neto)},
           {n: d.iva == null ? '—' : plata(d.iva)},
           {n:`<span class="${d.flujo==='egreso'?'neg':'pos'}">${plata(d.total)}</span>`},
-          {n: d.saldo == null ? '—' : plata(d.saldo)}]))
+          {n: d.saldo == null ? '—' : plata(d.saldo)}]),
+        {onclick: i => `verCadena('${vis[i].clase}',${vis[i].id})`})
         : '<div class="vacio">Sin documentos con ese filtro.</div>'}
     </div>`);
+}
+
+/* ── LA CADENA ENTERA, DE IDA Y DE VUELTA ──
+   Los vínculos ya existían todos; lo que faltaba era recorrerlos hasta el
+   final. La grilla mostraba UN eslabón —la factura decía "cobro REC-1" y ahí
+   terminaba— y para saber en qué banco entró esa plata había que ir a buscarlo
+   a mano. Se hace clic en cualquier fila y sale el árbol completo. */
+async function verCadena(clase, id){
+  let d;
+  try{ d = await api(`/api/c/documento/${clase}/${id}/cadena`); }
+  catch(e){ return toast(e.message, true); }
+  const viejo = $('#modal-cad'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-cad';
+  el.innerHTML = `<div class="box" style="max-width:780px">
+    <h3>La cadena completa</h3>
+    <div class="mini" style="margin-bottom:12px">${d.eslabones} eslabón(es) ·
+      ${d.completa ? '<b class="pos">todo explicado</b>'
+        : `<b class="neg">${d.huecos.length} hueco(s)</b>`}</div>
+    ${ramaCadena(d.arbol, 0)}
+    ${d.huecos.length ? `<div class="aviso" style="margin-top:14px;border-left-color:var(--bad)">
+      <b>Lo que falta para que la cadena cierre:</b>
+      ${d.huecos.map(h => `<div class="mini">· ${esc(h)}</div>`).join('')}</div>` : ''}
+    <div class="row-act" style="justify-content:flex-end;margin-top:16px">
+      <button onclick="$('#modal-cad').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+}
+const ICONO = {factura:'📄', pago:'🧾', cheque:'🏷', banco:'🏦', impuesto:'🏛',
+               vep:'🎫', retencion:'✂', efectivo:'💵', deposito:'⬇', endoso:'➡'};
+function ramaCadena(n, nivel){
+  const sangria = nivel * 22;
+  return `<div style="margin-left:${sangria}px;border-left:${nivel ? '2px solid var(--bor)' : '0'};
+      padding-left:${nivel ? 10 : 0}px;margin-top:6px">
+    <div class="cand" style="display:block;margin-top:0">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+        <span><b>${ICONO[n.clase] || '•'} ${esc(n.titulo)}</b>
+          ${n.rol ? `<span class="mini"> — ${esc(n.rol)}</span>` : ''}
+          ${n.detalle ? `<div class="mini">${esc(n.detalle)}</div>` : ''}</span>
+        <span style="white-space:nowrap">
+          ${n.importe != null ? `<b class="${n.importe < 0 ? 'neg' : ''}">${plata(n.importe)}</b>` : ''}
+          ${n.aplica != null ? `<span class="mini"> aplica ${plata(n.aplica)}</span>` : ''}
+          ${n.fecha ? `<div class="mini">${fecha(n.fecha)}</div>` : ''}</span>
+      </div>
+      ${n.estado ? `<div style="margin-top:4px">${badgeEstado(n.estado)}</div>` : ''}
+      ${n.falta ? `<div class="mini neg" style="margin-top:4px">falta ${esc(n.falta)}</div>` : ''}
+    </div>
+    ${n.hijos.map(h => ramaCadena(h, nivel + 1)).join('')}
+  </div>`;
 }
 
 /* ══ FACTURAS ══
@@ -1239,7 +1292,10 @@ async function tScp(){
 /* ══ BANCOS ══ */
 async function vBancos(){
   cargando('Bancos');
-  const [cs, ms] = await Promise.all([api('/api/c/cuentas'), api('/api/c/movimientos')]);
+  const [cs, ms, rm] = await Promise.all([
+    api('/api/c/cuentas'), api('/api/c/movimientos'),
+    api('/api/c/bancos/resumen-mensual').catch(() => ({meses:[]})),
+  ]);
   CTAS = cs;
   pintar(`
     <h2>Bancos</h2><div class="sub">El extracto anotado: cada movimiento se va completando con el CUIT,
@@ -1249,6 +1305,24 @@ async function vBancos(){
       <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.${
         c.codigo_bcra ? ` · BCRA ${esc(c.codigo_bcra)}` : ' · <span class="neg">sin maestro</span>'}</div></div>`).join('')
       || '<div class="card"><div class="k">Sin cuentas</div><div class="mini" style="margin-top:6px">Cargá una abajo.</div></div>'}</div>
+    ${rm.meses.length ? `<div class="panel" style="margin-top:16px">
+      <div class="panel-h"><b>El mes a mes</b>
+        <span class="mini">acredita ${plata(rm.acredita)} · debita ${plata(rm.debita)}${
+          rm.sin_explicar ? ` · <span class="neg">${plata(rm.sin_explicar)} sin explicar</span>` : ''}</span></div>
+      <div class="panel-b"><div class="mini" style="margin-bottom:8px">Lo que importa no es el
+        total del mes: es <b>cuánto de ese total tiene comprobante detrás</b>. Un mes con mucho
+        depósito y la mitad sin explicar no es un buen mes, es medio mes sin contabilizar.
+        Hacé clic en un mes para ver el detalle.</div></div>
+      ${tabla(['Mes','Banco','Depósitos de cheques','Acredita','Debita','Neto','Movs.','Sin explicar'],
+        rm.meses.map(m => [`<b>${esc(m.mes)}</b>`, esc(m.banco),
+          m.cheques_depositados ? `${m.cheques_depositados} · ${plata(m.cheques_depositados_importe)}` : '—',
+          {n:`<span class="pos">${plata(m.acredita)}</span>`},
+          {n:`<span class="neg">${plata(m.debita)}</span>`},
+          {n:plata(m.neto)}, m.movimientos,
+          {n: m.sin_explicar > 0.01 ? `<span class="neg">${plata(m.sin_explicar)}</span>`
+             : '<span class="badge b-ok">todo explicado</span>'}]),
+        {onclick: i => `verMesBanco('${rm.meses[i].mes}')`})}
+    </div>` : ''}
     <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Cuenta nueva</b>
       <button class="g xs" onclick="toggle('#b-cta')">Mostrar</button></div>
       <div class="panel-b hide" id="b-cta">
@@ -1292,6 +1366,32 @@ async function vBancos(){
         : '<div class="vacio">Sin movimientos. Se cargan a mano o los deja el job del banco.</div>'}
     </div>`);
 }
+/* El detalle de un mes, con lo que explica cada movimiento en su propia
+   columna: el recibo, el impuesto y su VEP, o el cheque. Lo que queda en
+   blanco es el hueco. */
+async function verMesBanco(mes){
+  const d = await api(`/api/c/bancos/mes/${mes}`);
+  const viejo = $('#modal-mes'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-mes';
+  el.innerHTML = `<div class="box" style="max-width:920px">
+    <h3>${esc(mes)} — el mes en el banco</h3>
+    <div class="mini" style="margin-bottom:12px">acredita <b>${plata(d.acredita)}</b> ·
+      debita <b>${plata(d.debita)}</b> · ${d.sin_explicar
+        ? `<b class="neg">${d.sin_explicar} movimiento(s) sin explicar</b>`
+        : '<b class="pos">todos explicados</b>'}</div>
+    ${tabla(['Fecha','Banco','Descripción','Importe','Qué lo explica'],
+      d.movimientos.map(m => [fecha(m.fecha), esc(m.banco),
+        esc((m.descripcion||'').slice(0,46)),
+        {n:`<span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span>`},
+        m.explica ? esc(m.explica) : '<span class="neg">—</span>']),
+      {onclick: i => `$('#modal-mes').remove();verCadena('banco',${d.movimientos.map(x=>x.id)[i]})`})}
+    <div class="row-act" style="justify-content:flex-end;margin-top:14px">
+      <button onclick="$('#modal-mes').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+}
+
 /* El maestro del BCRA: 81 entidades con su código (los 3 primeros dígitos del
    CBU). Se pide al escribir y se cachea — es público y no cambia. */
 let BANCOS_M = [];
