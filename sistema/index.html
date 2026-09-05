@@ -1099,10 +1099,25 @@ async function vIIBB(){
           : 'NO cierra — diferencia ' + plata(d.diferencia)}</span></div>
       <div class="panel-b">
         <div class="grid">
-          <div class="card"><div class="k">Impuesto determinado</div><div class="v">${plata(d.impuesto_determinado)}</div></div>
-          <div class="card"><div class="k">Suma de bases</div><div class="v sm">${plata(d.suma_bases)}</div></div>
-          <div class="card"><div class="k">Total ventas del período</div><div class="v sm">${plata(d.total_ventas)}</div></div>
+          <div class="card"><div class="k">Suma de bases</div><div class="v sm">${plata(d.suma_bases)}</div>
+            <div class="mini">el NETO de las ventas, sin IVA</div></div>
+          <div class="card"><div class="k">Impuesto determinado</div><div class="v sm">${plata(d.impuesto_determinado)}</div></div>
+          <div class="card"><div class="k">Deducciones</div>
+            <div class="v sm pos">${plata(d.deducciones)}</div>
+            <div class="mini">${esc(d.deducciones_fuente)}</div></div>
+          <div class="card"><div class="k">Saldo a favor anterior</div>
+            <div class="v sm pos">${plata(d.saldo_a_favor_anterior)}</div>
+            <div class="mini">lo que arrastra el portal</div></div>
+          <div class="card"><div class="k">${d.resultado === 'a pagar' ? 'A PAGAR' : 'Queda a favor'}</div>
+            <div class="v ${d.resultado === 'a pagar' ? 'neg' : 'pos'}">${plata(d.saldo)}</div></div>
         </div>
+        ${Object.keys(d.deducciones_detalle || {}).length ? `<div style="margin-top:12px">
+          <div class="mini" style="margin-bottom:6px">Las deducciones, una por una — ${
+            d.deducciones_fuente === 'portal'
+              ? '<b>como las informa el portal</b>: las retenciones y percepciones de IIBB las declaran los agentes directamente a Rentas, así que el portal las ve todas y nosotros solo las que llegaron en un papel'
+              : '<b>de nuestros comprobantes</b>: todavía no se cargó el relevamiento del portal, así que pueden faltar'}</div>
+          ${tabla(['Concepto','Importe'], Object.entries(d.deducciones_detalle).map(([k,v]) =>
+            [esc(k.replace(/_/g,' ')), {n:plata(v)}]))}</div>` : ''}
         ${!d.control_ok ? `<div class="aviso" style="margin-top:14px;border-left-color:var(--bad)">
           <b>No presentar así.</b> Hay ${plata(Math.abs(d.diferencia))} de ventas que no están imputadas a
           ninguna actividad${d.sin_actividad.length ? ` (${d.sin_actividad[0].facturas} comprobante/s)` : ''}.
@@ -1115,7 +1130,13 @@ async function vIIBB(){
     </div>
     <div class="aviso">El portal de ATP recibe estos importes en la grilla de
       <i>Declaración Actividad → Cargar Actividad</i>, una fila por par actividad+alícuota.
-      Las deducciones (retenciones, percepciones, SIRCUPA) las trae ATP sola.</div>`);
+      <br><b>La base es el NETO, sin IVA</b>: el IVA no es ingreso del contribuyente, lo cobra
+      para el fisco. Y el <b>saldo a favor</b> que arrastra el portal viene de toda la historia
+      del contribuyente — una DJ que lo ignore paga de más todos los meses.</div>
+    ${d.bases.length === 1 ? `<div class="aviso" style="border-left-color:var(--warn)">
+      <b>Todas las ventas están en una sola actividad.</b> Si el cliente factura por varias, el
+      impuesto sale mal: una actividad al 15% contada al 3% se paga de menos y después se
+      reclama. Se asigna por comprobante en <a href="#facturas">Facturas → Ventas</a>.</div>` : ''}`);
 }
 
 /* ── IMPUESTOS: la deuda, y si cada pago tiene su débito atado ──

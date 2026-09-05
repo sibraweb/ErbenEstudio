@@ -265,6 +265,30 @@ def _migrar(con):
         con.execute("ALTER TABLE vencimientos ADD COLUMN movimiento_id INTEGER")
         con.commit()
 
+    # ── las deducciones de IIBB que informa el portal ──
+    if "iibb_deducciones" not in tablas:
+        print("  migrando: deducciones de IIBB como las informa el portal…")
+        con.executescript("""
+            CREATE TABLE iibb_deducciones (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                jurisdiccion TEXT NOT NULL, periodo TEXT NOT NULL,
+                retenciones REAL NOT NULL DEFAULT 0,
+                percepciones REAL NOT NULL DEFAULT 0,
+                ret_bancarias REAL NOT NULL DEFAULT 0,
+                otras_retenciones REAL NOT NULL DEFAULT 0,
+                sirtac REAL NOT NULL DEFAULT 0,
+                sircupa REAL NOT NULL DEFAULT 0,
+                pagos_a_cuenta REAL NOT NULL DEFAULT 0,
+                otros_pagos_a_cuenta REAL NOT NULL DEFAULT 0,
+                otros_creditos REAL NOT NULL DEFAULT 0,
+                saldo_a_favor REAL NOT NULL DEFAULT 0,
+                origen TEXT NOT NULL DEFAULT 'portal',
+                actualizado TEXT,
+                UNIQUE (cliente_id, jurisdiccion, periodo));
+            CREATE INDEX ix_iibbded ON iibb_deducciones(cliente_id, periodo);""")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -2362,6 +2386,107 @@ def api_iva_inicial_set():
     return jsonify({"ok": True})
 
 
+CONCEPTOS_IIBB = ["retenciones", "percepciones", "ret_bancarias", "otras_retenciones",
+                  "sirtac", "sircupa", "pagos_a_cuenta", "otros_pagos_a_cuenta",
+                  "otros_creditos"]
+
+
+@app.post("/api/c/actividades")
+def api_actividades_cargar():
+    """El padrón de actividades del cliente, como lo trae el portal.
+
+    Reemplaza el de esa jurisdicción: el padrón es una foto, no un acumulado.
+    Si una actividad se dio de baja, tiene que desaparecer — dejarla haría que
+    una venta se pueda clasificar con un código que ya no existe."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    jur = (b.get("jurisdiccion") or "").strip()
+    acts = b.get("actividades") or []
+    if not jur:
+        con.close()
+        return jsonify({"error": "falta la jurisdicción"}), 400
+    con.execute("DELETE FROM maestro_actividades WHERE cuit=? AND jurisdiccion=?",
+                (cli["cuit"], jur))
+    for a in acts:
+        con.execute(
+            "INSERT OR REPLACE INTO maestro_actividades (cuit, jurisdiccion, codigo, nombre, "
+            " alicuota, principal, exento, inicio) VALUES (?,?,?,?,?,?,?,?)",
+            (cli["cuit"], jur, str(a.get("codigo")), a.get("nombre"),
+             _n(a.get("alicuota")), 1 if a.get("principal") else 0,
+             1 if a.get("exento") else 0, a.get("inicio")))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "actividades": len(acts)})
+
+
+@app.get("/api/c/iibb/deducciones")
+def api_iibb_deducciones():
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    q = "SELECT * FROM iibb_deducciones WHERE cliente_id=?"
+    args = [cli["id"]]
+    if request.args.get("periodo"):
+        q += " AND periodo=?"
+        args.append(request.args["periodo"])
+    if request.args.get("jurisdiccion"):
+        q += " AND jurisdiccion=?"
+        args.append(request.args["jurisdiccion"])
+    r = filas(con.execute(q + " ORDER BY substr(periodo,4) DESC, substr(periodo,1,2) DESC", args))
+    con.close()
+    for x in r:
+        x["total_deducciones"] = round(sum(_n(x[c]) for c in CONCEPTOS_IIBB), 2)
+    return jsonify(r)
+
+
+@app.post("/api/c/iibb/deducciones")
+def api_iibb_deducciones_set():
+    """Las deducciones de un período, como las informa el portal.
+
+    ⚠ NO SALEN DE NUESTRAS FACTURAS. Las retenciones y percepciones de IIBB las
+    informan los AGENTES directamente a Rentas: el contribuyente se entera
+    mirando el portal. Una DJ armada solo con lo que nosotros vemos declara de
+    menos y paga de más — por eso acá el portal manda."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    periodo = (b.get("periodo") or "").strip()
+    if not _rango_periodo(periodo):
+        con.close()
+        return jsonify({"error": "periodo debe ser MM/YYYY"}), 400
+    jur = (b.get("jurisdiccion") or "").strip()
+    if not jur:
+        con.close()
+        return jsonify({"error": "falta la jurisdicción"}), 400
+    vals = [_n(b.get(c)) for c in CONCEPTOS_IIBB]
+    if any(v < 0 for v in vals) or _n(b.get("saldo_a_favor")) < 0:
+        con.close()
+        return jsonify({"error": "una deducción no puede ser negativa"}), 400
+    cols = ", ".join(CONCEPTOS_IIBB)
+    marcas = ",".join("?" * len(CONCEPTOS_IIBB))
+    con.execute(
+        f"INSERT INTO iibb_deducciones (cliente_id, jurisdiccion, periodo, {cols}, "
+        f" saldo_a_favor, origen, actualizado) VALUES (?,?,?,{marcas},?,?,?) "
+        f"ON CONFLICT(cliente_id, jurisdiccion, periodo) DO UPDATE SET "
+        + ", ".join(f"{c}=excluded.{c}" for c in CONCEPTOS_IIBB)
+        + ", saldo_a_favor=excluded.saldo_a_favor, origen=excluded.origen,"
+          " actualizado=excluded.actualizado",
+        (cli["id"], jur, periodo, *vals, _n(b.get("saldo_a_favor")),
+         b.get("origen") or "portal", _hoy()))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
 @app.get("/api/c/dj/base")
 def api_dj_base():
     """La base de la DJ de IIBB por par actividad+alícuota, con EL control:
@@ -2379,8 +2504,16 @@ def api_dj_base():
     desde, hasta = rango
     jur = request.args.get("jurisdiccion")
 
+    # ⚠⚠ LA BASE DE IIBB ES EL **NETO**, NO EL TOTAL (corregido 05/09).
+    # Acá sumaba `total`, o sea el neto MÁS el IVA, y el impuesto salía inflado
+    # por el 21% de más. Se vio contrastando contra el portal de ATP: en abril,
+    # mayo y junio la diferencia contra la base declarada era EXACTAMENTE el
+    # débito fiscal de cada mes.
+    #     junio   ATP 22.429.371,90 · acá 27.139.540,00 · dif 4.710.168,10
+    #     el débito fiscal de junio: 4.710.168,10
+    # El IVA no es ingreso del contribuyente: lo cobra para el fisco.
     q = ("SELECT iibb_jurisdiccion AS jurisdiccion, iibb_codigo AS codigo, iibb_alicuota AS alicuota, "
-         "  ROUND(SUM(total),2) AS base, COUNT(*) AS facturas FROM facturas "
+         "  ROUND(SUM(neto),2) AS base, COUNT(*) AS facturas FROM facturas "
          "WHERE cliente_id=? AND mov='venta' AND fecha BETWEEN ? AND ?")
     args = [cli["id"], desde, hasta]
     if jur:
@@ -2397,8 +2530,10 @@ def api_dj_base():
             (cli["cuit"], b["codigo"], b["alicuota"])).fetchone() or {"nombre": None})["nombre"]
         b["impuesto"] = round(b["base"] * (b["alicuota"] or 0) / 100, 2)
 
+    # El control compara contra el NETO por la misma razón: si un lado suma neto
+    # y el otro total, el control da mal siempre y se termina ignorando.
     total_ventas = _n(con.execute(
-        "SELECT COALESCE(SUM(total),0) FROM facturas WHERE cliente_id=? AND mov='venta' "
+        "SELECT COALESCE(SUM(neto),0) FROM facturas WHERE cliente_id=? AND mov='venta' "
         "AND fecha BETWEEN ? AND ?", (cli["id"], desde, hasta)).fetchone()[0])
     suma_bases = round(sum(b["base"] for b in bases), 2)
     determinado = round(sum(b["impuesto"] for b in bases), 2)
@@ -2426,15 +2561,44 @@ def api_dj_base():
         "JOIN facturas f ON f.id=t.factura_id "
         "WHERE f.cliente_id=? AND f.fecha BETWEEN ? AND ? AND t.tipo='sin_clasificar'",
         (cli["id"], desde, hasta)).fetchone()[0])
-    deducciones = round(perc_iibb + ret_iibb, 2)
-    saldo = round(determinado - deducciones, 2)
+    # ── LO QUE DICE EL PORTAL MANDA (05/09) ──────────────────────────────────
+    # Las retenciones y percepciones de IIBB las informan los AGENTES
+    # directamente a Rentas. Nosotros vemos solo las que aparecen en un papel
+    # que nos llegó; el portal las ve todas. Si existen las del portal para
+    # este período, se usan ésas: armar la DJ con lo nuestro declararía de
+    # menos y el cliente pagaría de más.
+    #
+    # Y el SALDO A FAVOR es el número que más pesa y el único que no se puede
+    # deducir de nada: viene de toda la historia del contribuyente, muy
+    # anterior a que el estudio lo tomara. En el primer cliente son
+    # $3.688.413,47 — una DJ que lo ignore paga de más todos los meses.
+    portal = con.execute(
+        "SELECT * FROM iibb_deducciones WHERE cliente_id=? AND periodo=?"
+        + (" AND jurisdiccion=?" if jur else ""),
+        (cli["id"], request.args["periodo"], *( [jur] if jur else [] ))).fetchone()
+
+    detalle_ded, a_favor = {}, 0.0
+    if portal:
+        detalle_ded = {c: _n(portal[c]) for c in CONCEPTOS_IIBB if _n(portal[c])}
+        deducciones = round(sum(_n(portal[c]) for c in CONCEPTOS_IIBB), 2)
+        a_favor = _n(portal["saldo_a_favor"])
+        fuente_ded = "portal"
+    else:
+        detalle_ded = {k: v for k, v in
+                       (("percepciones", perc_iibb), ("retenciones", ret_iibb)) if v}
+        deducciones = round(perc_iibb + ret_iibb, 2)
+        fuente_ded = "nuestros comprobantes"
+
+    saldo = round(determinado - deducciones - a_favor, 2)
     con.close()
     return jsonify({
         "periodo": request.args["periodo"], "jurisdiccion": jur,
         "bases": bases,
         "impuesto_determinado": determinado,
         "percepciones_iibb": perc_iibb, "retenciones_iibb": ret_iibb,
-        "deducciones": deducciones,
+        "deducciones": deducciones, "deducciones_detalle": detalle_ded,
+        "deducciones_fuente": fuente_ded,
+        "saldo_a_favor_anterior": a_favor,
         "saldo": abs(saldo),
         "resultado": "a pagar" if saldo > 0 else ("a favor" if saldo < 0 else "en cero"),
         "sin_clasificar": sin_clas,

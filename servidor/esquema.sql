@@ -394,6 +394,39 @@ CREATE TABLE iva_saldo_inicial (
     actualizado TEXT NOT NULL
 );
 
+-- ══ LAS DEDUCCIONES DE IIBB, COMO LAS INFORMA EL PORTAL ══════════════════════
+-- ⚠ ESTAS NO SALEN DE NUESTRAS FACTURAS, y por eso tienen tabla propia. Las
+-- retenciones y percepciones de IIBB las informan los AGENTES directamente a
+-- Rentas: el contribuyente se entera mirando el portal. Si la DJ se armara con
+-- lo que nosotros vemos, declararía de menos y pagaría de más.
+--
+-- Los conceptos son los que pide ATP Formosa, uno por uno (relevados del
+-- portal el 17/08). No es una lista genérica: SIRCUPA y SIRTAC son regímenes
+-- concretos, y las retenciones BANCARIAS van aparte de las comunes porque las
+-- practica el banco sobre acreditaciones, no un cliente sobre una factura.
+CREATE TABLE iibb_deducciones (
+    id            INTEGER PRIMARY KEY,
+    cliente_id    INTEGER NOT NULL REFERENCES clientes(id),
+    jurisdiccion  TEXT NOT NULL,              -- DGR-Fsa | DGR-Ctes | ...
+    periodo       TEXT NOT NULL,              -- MM/YYYY
+    retenciones          REAL NOT NULL DEFAULT 0,
+    percepciones         REAL NOT NULL DEFAULT 0,
+    ret_bancarias        REAL NOT NULL DEFAULT 0,
+    otras_retenciones    REAL NOT NULL DEFAULT 0,
+    sirtac               REAL NOT NULL DEFAULT 0,
+    sircupa              REAL NOT NULL DEFAULT 0,
+    pagos_a_cuenta       REAL NOT NULL DEFAULT 0,
+    otros_pagos_a_cuenta REAL NOT NULL DEFAULT 0,
+    otros_creditos       REAL NOT NULL DEFAULT 0,
+    -- El que arrastra el portal. Es el dato que más pesa y el que no se puede
+    -- deducir de nada: viene de toda la historia del contribuyente.
+    saldo_a_favor        REAL NOT NULL DEFAULT 0,
+    origen        TEXT NOT NULL DEFAULT 'portal',   -- portal | manual
+    actualizado   TEXT,
+    UNIQUE (cliente_id, jurisdiccion, periodo)
+);
+CREATE INDEX ix_iibbded ON iibb_deducciones(cliente_id, periodo);
+
 CREATE TABLE djs (
     id            INTEGER PRIMARY KEY,
     cliente_id    INTEGER NOT NULL REFERENCES clientes(id),
