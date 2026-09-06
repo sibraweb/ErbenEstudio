@@ -210,9 +210,31 @@ CREATE TABLE cheques (
     deposito_cuenta_id INTEGER REFERENCES cuentas_bancarias(id),
     deposito_fecha     TEXT,
     endoso_entidad_id  INTEGER REFERENCES entidades_cliente(id),
+    -- ⚠ EL REBOTE. Acá el librador deja de ser un dato de archivo: mientras el
+    -- cheque anda bien alcanza con quién nos lo dio y a quién se lo dimos —eso
+    -- concilia facturas—; cuando rebota la pregunta es a quién se le reclama.
+    -- El DEPOSITANTE el banco recién lo informa en el rechazo: pedirlo antes
+    -- sería pedir un dato que nadie tiene.
+    rechazo_fecha  TEXT,
+    rechazo_motivo TEXT,
+    depositante    TEXT,
+    canje_de_id    INTEGER REFERENCES cheques(id),   -- a quién reemplaza
     nota           TEXT,
     UNIQUE (cliente_id, origen, banco, numero)
 );
+
+-- Un cheque no es una foto: pasa por manos. Cuando algo sale mal la pregunta
+-- es «¿por dónde anduvo?», y sin esto la respuesta es el estado de hoy.
+CREATE TABLE cheque_eventos (
+    id         INTEGER PRIMARY KEY,
+    cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+    cheque_id  INTEGER NOT NULL REFERENCES cheques(id) ON DELETE CASCADE,
+    fecha      TEXT NOT NULL,
+    que        TEXT NOT NULL,          -- nacio | depositado | endosado | rechazado | …
+    detalle    TEXT,
+    estado     TEXT
+);
+CREATE INDEX ix_chqev ON cheque_eventos(cheque_id, id);
 CREATE INDEX ix_chq_cliente ON cheques(cliente_id, estado);
 CREATE INDEX ix_chq_venc ON cheques(cliente_id, fecha_pago);
 

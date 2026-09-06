@@ -1574,23 +1574,41 @@ async function vCheques(){
             : '<span class="mini">—</span>',
           `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
           {n:plata(c.importe)}, badgeEstado(c.estado),
-          c.estado === 'en_cartera' ? `<div class="row-act">
-            <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
-            <button class="g xs" onclick="endosar(${c.id})">Endosar</button></div>` : '']),
+          accionesCheque(c)]),
         {fila: i => marcaDup(rec[i].id)})
         : `<div class="vacio">Sin cheques cobrados.<br>
            <span class="mini">Se cargan con "+ Cheque recibido", o desde Pagos → cobranza con medio cheque.</span></div>`}
     </div>
     <div class="panel"><div class="panel-h"><b>Emitidos — ${emi.length}</b>
       <span class="mini">a pagar: ${plata(emi.filter(c=>c.estado==='emitido').reduce((s,c)=>s+c.importe,0))}</span></div>
-      ${emi.length ? tabla(['Número','Banco','Beneficiario','Vence','Importe','Estado'],
+      ${emi.length ? tabla(['Número','Banco','Beneficiario','Vence','Importe','Estado','Acciones'],
         emi.map(c => [esc(c.numero), esc(c.banco||'—'),
           c.beneficiario ? esc(c.beneficiario) : '<span class="mini">sin definir</span>',
           `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
-          {n:plata(c.importe)}, badgeEstado(c.estado)]),
+          {n:plata(c.importe)}, badgeEstado(c.estado), accionesCheque(c)]),
         {fila: i => marcaDup(emi[i].id)})
         : '<div class="vacio">Sin cheques emitidos.</div>'}
     </div>`);
+}
+
+/* Qué se puede hacer con un cheque según dónde está. Un cheque rechazado no
+   se deposita: se repone o se canjea. Mostrar botones que van a fallar es
+   peor que no mostrarlos. */
+function accionesCheque(c){
+  const hist = `<button class="g xs" onclick="historialCheque(${c.id},'${esc(c.numero)}')">Historial</button>`;
+  if (c.estado === 'rechazado') return `<div class="row-act">
+    <button class="g xs" onclick="reponerCheque(${c.id},'${esc(c.numero)}')">Reponer</button>
+    <button class="g xs" onclick="canjearCheque(${c.id},'${esc(c.numero)}',${c.importe})">Lo cambiaron</button>
+    ${hist}</div>`;
+  if (c.estado === 'en_cartera') return `<div class="row-act">
+    <button class="g xs" onclick="depositar(${c.id})">Depositar</button>
+    <button class="g xs" onclick="endosar(${c.id})">Endosar</button>
+    <button class="g xs" onclick="rebotar(${c.id},'${esc(c.numero)}',${c.importe},'${esc(c.librador||'')}')">Rebotó</button>
+    ${hist}</div>`;
+  if (['depositado','cobrado','emitido','endosado'].includes(c.estado)) return `<div class="row-act">
+    <button class="g xs" onclick="rebotar(${c.id},'${esc(c.numero)}',${c.importe},'${esc(c.librador||'')}')">Rebotó</button>
+    ${hist}</div>`;
+  return `<div class="row-act">${hist}</div>`;
 }
 
 function abrirChq(cual){
@@ -1654,6 +1672,104 @@ async function altaChequeEmitido(){
     importe: num('ne-imp'), nota: val('ne-nota')});
     toast('Cheque emitido'); vCheques();
   }catch(e){ toast(e.message, true); }
+}
+
+/* ── EL CHEQUE QUE REBOTA ──
+   Acá el librador deja de ser un dato de archivo. Mientras el cheque anda bien
+   alcanza con quién nos lo dio y a quién se lo dimos —eso concilia facturas—;
+   cuando rebota la pregunta cambia: a quién se le reclama. Y el DEPOSITANTE el
+   banco recién lo informa en el rechazo, así que pedirlo antes sería pedir un
+   dato que nadie tiene. */
+async function rebotar(id, numero, importe, libradorActual){
+  const r = await modal(`El cheque Nº${esc(numero)} rebotó`,
+    'Se registra el rechazo y <b>la factura que este cheque canceló vuelve a deber</b> '
+    + `${plata(importe)}. Un cheque rechazado no pagó nada: si la cobranza queda como estaba, `
+    + 'el cliente figura al día debiendo.<br><br>'
+    + '<b>Los dos datos de abajo se piden recién ahora</b> y no al cargarlo: el librador '
+    + 'importa cuando hay que reclamar, y el depositante lo informa el banco en el rechazo.',
+    [
+      {id:'md-motivo', label:'Por qué rebotó',
+       html:`<select id="md-motivo">
+         <option>Sin fondos suficientes</option>
+         <option>Sin fondos suficientes con aviso</option>
+         <option>Cuenta cerrada</option>
+         <option>Orden de no pagar</option>
+         <option>Defectos formales (firma, fecha, endoso)</option>
+         <option>Otro</option></select>`},
+      {id:'md-fecha', label:'Fecha del rechazo',
+       html:`<input type="date" id="md-fecha" value="${hoy()}">`, ancho:''},
+      {id:'md-lib', label:'Quién firmó el cheque (a quién se le reclama)',
+       html:`<input id="md-lib" value="${esc(libradorActual || '')}" placeholder="razón social del librador">`},
+      {id:'md-libcuit', label:'CUIT del librador',
+       html:'<input id="md-libcuit" placeholder="opcional">', ancho:''},
+      {id:'md-dep', label:'Quién lo depositó (lo dice el banco en el rechazo)',
+       html:'<input id="md-dep" placeholder="opcional">', ancho:''},
+    ], 'Registrar el rechazo');
+  if (!r) return;
+  try{
+    const res = await post(`/api/c/cheques/${id}/rechazo`, {
+      motivo: r['md-motivo'], fecha: r['md-fecha'],
+      librador_nombre: r['md-lib'], librador_cuit: r['md-libcuit'],
+      depositante: r['md-dep']});
+    toast('Rechazo registrado' + (res.deshecho?.length ? ' · ' + res.deshecho[0] : ''));
+    vCheques();
+  }catch(e){ toast(e.message, true); }
+}
+
+async function reponerCheque(id, numero){
+  const r = await modal(`Volver a poner el Nº${esc(numero)} en la cola`,
+    'Vuelve al estado que tenía antes del rechazo, para presentarlo de nuevo o reclamarlo.'
+    + '<br><br>Se separa del rechazo a propósito: entre que rebota y que se decide qué hacer '
+    + 'puede pasar tiempo, y mientras tanto tiene que <b>verse como rechazado</b>, no como si '
+    + 'nada hubiera pasado.', [], 'Reponer');
+  if (!r) return;
+  try{ await post(`/api/c/cheques/${id}/reponer`, {});
+    toast('Repuesto'); vCheques(); }catch(e){ toast(e.message, true); }
+}
+
+async function canjearCheque(id, numero, importe){
+  const r = await modal(`Lo cambiaron por otro cheque`,
+    `El Nº${esc(numero)} se cierra como <b>canjeado</b> y nace el reemplazo, atado a él.`
+    + '<br><br>Los dos quedan: si se pisara el viejo, el rebote desaparecería del historial '
+    + 'y nadie sabría que este cliente ya rebotó una vez.',
+    [
+      {id:'md-num', label:'Número del cheque nuevo', html:'<input id="md-num">', ancho:''},
+      {id:'md-banco', label:'Banco', html:'<input id="md-banco">', ancho:''},
+      {id:'md-imp', label:'Importe',
+       html:`<input id="md-imp" type="number" step="0.01" value="${importe}">`, ancho:''},
+      {id:'md-fp', label:'Vencimiento', html:`<input type="date" id="md-fp" value="${hoy()}">`, ancho:''},
+    ], 'Registrar el canje');
+  if (!r) return;
+  if (!(r['md-num'] || '').trim()) return toast('Falta el número del cheque nuevo', true);
+  try{
+    await post(`/api/c/cheques/${id}/canje`, {cheque: {
+      numero: r['md-num'], banco: r['md-banco'],
+      importe: parseFloat(r['md-imp']) || importe, fecha_pago: r['md-fp']}});
+    toast('Canjeado — el reemplazo quedó en cartera'); vCheques();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* La vida del cheque, para cuando hay que explicar por dónde anduvo. */
+async function historialCheque(id, numero){
+  const d = await api(`/api/c/cheques/${id}/historial`);
+  const viejo = $('#modal-hist'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-hist';
+  el.innerHTML = `<div class="box" style="max-width:640px">
+    <h3>Historial del cheque Nº${esc(numero)}</h3>
+    <div class="mini" style="margin-bottom:12px">${esc(d.cheque.banco || 'sin banco')} ·
+      ${plata(d.cheque.importe)} · vence ${fecha(d.cheque.fecha_pago)}
+      ${d.cheque.rechazo_motivo ? `<br><b class="neg">Rechazado ${fecha(d.cheque.rechazo_fecha)}:
+        ${esc(d.cheque.rechazo_motivo)}</b>` : ''}
+      ${d.cheque.depositante ? `<br>lo depositó ${esc(d.cheque.depositante)}` : ''}</div>
+    ${d.eventos.length ? tabla(['Cuándo','Qué pasó','Detalle'], d.eventos.map(e =>
+      [fecha(e.fecha), esc((e.que||'').replace(/_/g,' ')), esc(e.detalle || '—')]))
+      : `<div class="vacio">Sin eventos anotados.<br>
+         <span class="mini">Los cheques cargados antes de que existiera el historial no lo tienen.</span></div>`}
+    <div class="row-act" style="justify-content:flex-end;margin-top:16px">
+      <button onclick="$('#modal-hist').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
 }
 
 async function depositar(id){

@@ -315,6 +315,22 @@ def _migrar(con):
         con.execute("ALTER TABLE pagos ADD COLUMN anulado_fecha TEXT")
         con.commit()
 
+    # ── el cheque que rebota, y su historial ──
+    cq2 = {f[1] for f in con.execute("PRAGMA table_info(cheques)")}
+    if "rechazo_fecha" not in cq2:
+        print("  migrando: el rebote del cheque y su historial…")
+        for col in ("rechazo_fecha TEXT", "rechazo_motivo TEXT", "depositante TEXT",
+                    "canje_de_id INTEGER"):
+            con.execute(f"ALTER TABLE cheques ADD COLUMN {col}")
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS cheque_eventos (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                cheque_id INTEGER NOT NULL REFERENCES cheques(id) ON DELETE CASCADE,
+                fecha TEXT NOT NULL, que TEXT NOT NULL, detalle TEXT, estado TEXT);
+            CREATE INDEX IF NOT EXISTS ix_chqev ON cheque_eventos(cheque_id, id);""")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -1069,6 +1085,207 @@ def api_cheques_alta():
     return jsonify({"ok": True, "id": chid})
 
 
+def _evento_cheque(con, cid, chid, que, detalle=None, estado=None):
+    """Anota qué le pasó al cheque. Un cheque no es una foto: pasa por manos,
+    y cuando algo sale mal la pregunta es «¿por dónde anduvo?»."""
+    con.execute(
+        "INSERT INTO cheque_eventos (cliente_id, cheque_id, fecha, que, detalle, estado) "
+        "VALUES (?,?,?,?,?,?)", (cid, chid, _hoy(), que, detalle, estado))
+
+
+@app.get("/api/c/cheques/<int:chid>/historial")
+def api_cheque_historial(chid):
+    """La vida del cheque: por dónde anduvo y qué le pasó."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    ch = _de_este_cliente(con, "cheques", chid, cli["id"])
+    if not ch:
+        con.close()
+        return jsonify({"error": "cheque inexistente para este cliente"}), 404
+    ev = filas(con.execute(
+        "SELECT * FROM cheque_eventos WHERE cheque_id=? ORDER BY id", (chid,)))
+    con.close()
+    return jsonify({"cheque": dict(ch), "eventos": ev})
+
+
+@app.post("/api/c/cheques/<int:chid>/rechazo")
+def api_cheque_rechazo(chid):
+    """EL CHEQUE REBOTÓ.
+
+    ⚠ ACÁ ES DONDE EL LIBRADOR DEJA DE SER UN DATO DE ARCHIVO. Mientras el
+    cheque anda bien alcanza con saber quién nos lo dio y a quién se lo dimos
+    —eso es lo que concilia facturas—. Cuando rebota, la pregunta cambia: a
+    quién se le reclama. Y ahí sí hace falta quién lo FIRMÓ.
+
+    Lo mismo con el DEPOSITANTE: el banco recién lo informa en el rechazo.
+    Pedirlo antes sería pedir un dato que nadie tiene.
+
+    ⚠ Y LO MÁS IMPORTANTE: la factura que ese cheque canceló VUELVE A DEBER.
+    Un cheque rechazado no pagó nada. Si la cobranza queda como estaba, el
+    cliente figura al día debiendo, y eso no se descubre hasta que alguien
+    cruza el banco a mano.
+
+    El rechazo NO es terminal: el cheque vuelve a la cola —`en_cartera` si es
+    de un tercero, `emitido` si es propio— para que el reemplazo lo matchee.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    ch = _de_este_cliente(con, "cheques", chid, cli["id"])
+    if not ch:
+        con.close()
+        return jsonify({"error": "cheque inexistente para este cliente"}), 404
+    if ch["estado"] in ("anulado", "rechazado"):
+        con.close()
+        return jsonify({"error": f"ese cheque está '{ch['estado']}'"}), 400
+    b = request.get_json(force=True) or {}
+    motivo = (b.get("motivo") or "").strip()
+    if not motivo:
+        con.close()
+        return jsonify({"error": "falta el motivo del rechazo: sin fondos, "
+                                 "firma, orden de no pagar…"}), 400
+    fecha = (b.get("fecha") or _hoy())[:10]
+
+    # Los dos datos que recién ahora existen. No se exigen —el banco a veces
+    # no los da— pero se guardan si vienen, y la pantalla los pide acá.
+    lib_nom = (b.get("librador_nombre") or "").strip() or None
+    lib_cuit = re.sub(r"\D", "", b.get("librador_cuit") or "") or None
+    depositante = (b.get("depositante") or "").strip() or None
+
+    deshecho = []
+    # ── LA FACTURA VUELVE A DEBER ────────────────────────────────────────────
+    # El cheque entró por una cobranza; si esa cobranza aplicó a facturas, hay
+    # que soltar lo que este cheque representaba. Se suelta hasta el importe
+    # del cheque, de la más nueva a la más vieja: la última que se dio por
+    # cobrada es la que deja de estarlo.
+    if ch["pago_origen_id"]:
+        resta = _n(ch["importe"])
+        for a in con.execute(
+                "SELECT a.factura_id, a.importe FROM pago_aplicaciones a "
+                "JOIN facturas f ON f.id=a.factura_id "
+                "WHERE a.pago_id=? ORDER BY f.fecha DESC", (ch["pago_origen_id"],)).fetchall():
+            if resta <= 0.009:
+                break
+            quita = min(_n(a["importe"]), resta)
+            if quita >= _n(a["importe"]) - 0.009:
+                con.execute("DELETE FROM pago_aplicaciones WHERE pago_id=? AND factura_id=?",
+                            (ch["pago_origen_id"], a["factura_id"]))
+            else:
+                con.execute("UPDATE pago_aplicaciones SET importe=? WHERE pago_id=? AND factura_id=?",
+                            (round(_n(a["importe"]) - quita, 2), ch["pago_origen_id"],
+                             a["factura_id"]))
+            resta = round(resta - quita, 2)
+            deshecho.append(f"la factura #{a['factura_id']} vuelve a deber {quita:,.2f}")
+        # El recibo vale menos: ese cheque no pagó.
+        con.execute("UPDATE pagos SET total=ROUND(total - ?, 2) WHERE id=?",
+                    (_n(ch["importe"]), ch["pago_origen_id"]))
+
+    # ── y si estaba conciliado con el banco, deja de estarlo ─────────────────
+    cc = con.execute("SELECT movimiento_id FROM conciliaciones WHERE cheque_id=?",
+                     (chid,)).fetchone()
+    if cc:
+        con.execute("UPDATE movimientos_banco SET conciliado=0 WHERE id=?", (cc["movimiento_id"],))
+        con.execute("DELETE FROM conciliaciones WHERE cheque_id=?", (chid,))
+        deshecho.append("el movimiento del banco vuelve a estar sin explicar")
+
+    vuelve = "emitido" if ch["origen"] == "emitido" else "en_cartera"
+    con.execute(
+        "UPDATE cheques SET estado='rechazado', rechazo_fecha=?, rechazo_motivo=?, "
+        " depositante=?, "
+        " librador_nombre=COALESCE(?, librador_nombre), "
+        " cuit_librador=COALESCE(?, cuit_librador), "
+        " deposito_cuenta_id=NULL, deposito_fecha=NULL WHERE id=?",
+        (fecha, motivo, depositante, lib_nom, lib_cuit, chid))
+    _evento_cheque(con, cli["id"], chid, "rechazado",
+                   f"{motivo} · {fecha}" + (f" · depositó {depositante}" if depositante else ""),
+                   "rechazado")
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "deshecho": deshecho, "vuelve_a": vuelve})
+
+
+@app.post("/api/c/cheques/<int:chid>/reponer")
+def api_cheque_reponer(chid):
+    """Después del rechazo, el cheque vuelve a la cola.
+
+    Se separa del rechazo a propósito: entre que rebota y que se decide qué
+    hacer puede pasar tiempo, y mientras tanto tiene que verse como
+    RECHAZADO —no como si nada hubiera pasado—. Volverlo a cartera es decir
+    «lo vamos a volver a presentar o a reclamar»."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    ch = _de_este_cliente(con, "cheques", chid, cli["id"])
+    if not ch:
+        con.close()
+        return jsonify({"error": "cheque inexistente para este cliente"}), 404
+    if ch["estado"] != "rechazado":
+        con.close()
+        return jsonify({"error": "solo se repone un cheque rechazado"}), 400
+    vuelve = "emitido" if ch["origen"] == "emitido" else "en_cartera"
+    con.execute("UPDATE cheques SET estado=? WHERE id=?", (vuelve, chid))
+    _evento_cheque(con, cli["id"], chid, "repuesto", f"vuelve a {vuelve}", vuelve)
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "estado": vuelve})
+
+
+@app.post("/api/c/cheques/<int:chid>/canje")
+def api_cheque_canje(chid):
+    """Lo cambian por otro: el rechazado se cierra y nace el reemplazo.
+
+    Es lo que pasa de verdad cuando un cheque rebota y el cliente lo repone:
+    no se «arregla» el viejo, viene uno nuevo. Los dos quedan, atados — si se
+    pisara el viejo, el rebote desaparecería del historial."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    ch = _de_este_cliente(con, "cheques", chid, cli["id"])
+    if not ch:
+        con.close()
+        return jsonify({"error": "cheque inexistente para este cliente"}), 404
+    b = request.get_json(force=True) or {}
+    nuevo = b.get("cheque") or {}
+    if not (nuevo.get("numero") or "").strip():
+        con.close()
+        return jsonify({"error": "el cheque de reemplazo necesita número"}), 400
+    try:
+        cur = con.execute(
+            "INSERT INTO cheques (cliente_id, origen, numero, banco, cuit_librador, "
+            " librador_nombre, fecha_emision, fecha_pago, importe, estado, pago_origen_id, "
+            " canje_de_id, nota) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cli["id"], ch["origen"], nuevo["numero"].strip(),
+             nuevo.get("banco") or ch["banco"],
+             re.sub(r"\D", "", nuevo.get("cuit_librador") or "") or ch["cuit_librador"],
+             (nuevo.get("librador_nombre") or "").strip() or ch["librador_nombre"],
+             nuevo.get("fecha_emision") or _hoy(),
+             (nuevo.get("fecha_pago") or _hoy())[:10],
+             _n(nuevo.get("importe")) or _n(ch["importe"]),
+             "en_cartera" if ch["origen"] == "recibido" else "emitido",
+             ch["pago_origen_id"], chid, b.get("nota")))
+    except sqlite3.IntegrityError:
+        con.close()
+        return jsonify({"error": "ese cheque ya existe (mismo banco y número)"}), 409
+    nid = cur.lastrowid
+    con.execute("UPDATE cheques SET estado='canjeado' WHERE id=?", (chid,))
+    _evento_cheque(con, cli["id"], chid, "canjeado",
+                   f"reemplazado por el Nº{nuevo['numero'].strip()}", "canjeado")
+    _evento_cheque(con, cli["id"], nid, "nacio_por_canje",
+                   f"reemplaza al Nº{ch['numero']}", "en_cartera")
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "id": nid})
+
+
 @app.post("/api/c/cheques/<int:chid>/depositar")
 def api_cheque_depositar(chid):
     con = db()
@@ -1089,6 +1306,8 @@ def api_cheque_depositar(chid):
         return jsonify({"error": "cuenta inexistente para este cliente"}), 400
     con.execute("UPDATE cheques SET estado='depositado', deposito_cuenta_id=?, deposito_fecha=? WHERE id=?",
                 (b["cuenta_id"], (b.get("fecha") or _hoy())[:10], chid))
+    _evento_cheque(con, cli["id"], chid, "depositado",
+                   f"cuenta #{b['cuenta_id']} · {(b.get('fecha') or _hoy())[:10]}", "depositado")
     con.commit()
     con.close()
     return jsonify({"ok": True})
@@ -1116,6 +1335,7 @@ def api_cheque_endosar(chid):
         return jsonify({"error": "entidad inexistente para este cliente"}), 400
     con.execute("UPDATE cheques SET estado='endosado', endoso_entidad_id=? WHERE id=?",
                 (b["entidad_id"], chid))
+    _evento_cheque(con, cli["id"], chid, "endosado", f"entidad #{b['entidad_id']}", "endosado")
     con.commit()
     con.close()
     return jsonify({"ok": True})
