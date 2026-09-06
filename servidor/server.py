@@ -306,6 +306,15 @@ def _migrar(con):
             CREATE INDEX ix_pagofis ON pagos_fiscales(cliente_id, fecha_pago);""")
         con.commit()
 
+    # ── el recibo se anula, no se borra ──
+    cp = {f[1] for f in con.execute("PRAGMA table_info(pagos)")}
+    if "anulado" not in cp:
+        print("  migrando: el recibo anulado deja rastro…")
+        con.execute("ALTER TABLE pagos ADD COLUMN anulado INTEGER NOT NULL DEFAULT 0")
+        con.execute("ALTER TABLE pagos ADD COLUMN anulado_motivo TEXT")
+        con.execute("ALTER TABLE pagos ADD COLUMN anulado_fecha TEXT")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -1257,7 +1266,7 @@ def api_pagos():
         "  COALESCE((SELECT SUM(x.monto) FROM retenciones x WHERE x.pago_id=p.id),0) AS retenido "
         "FROM pagos p "
         "JOIN entidades_cliente e ON e.id=p.entidad_id JOIN maestro_entidades m ON m.cuit=e.cuit "
-        "WHERE p.cliente_id=? ORDER BY p.fecha DESC, p.id DESC", (cli["id"],)))
+        "WHERE p.cliente_id=? ORDER BY p.anulado, p.fecha DESC, p.id DESC", (cli["id"],)))
     for p in r:
         p["medios"] = filas(con.execute(
             "SELECT medio, importe, movimiento_id, cheque_id FROM pago_medios WHERE pago_id=?", (p["id"],)))
@@ -1266,6 +1275,85 @@ def api_pagos():
             "FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id WHERE a.pago_id=?", (p["id"],)))
     con.close()
     return jsonify(r)
+
+
+def _guardar_medios(con, cid, pago_id, direccion, ent, medios, fecha):
+    """Con qué se pagó: efectivo, un movimiento del banco, o un cheque.
+
+    Extraído del alta (06/09) para que EDITAR use exactamente las mismas
+    reglas. Estaba escrito adentro de `api_pagos_alta`, y una corrección de
+    medios que las copiara habría empezado a divergir el día uno.
+
+    Devuelve None si salió bien, o la respuesta de error. NO cierra la conexión
+    ni hace rollback: eso lo decide el que llama, que es el que sabe si hay más
+    cosas escritas en la misma transacción."""
+    for m in medios:
+        medio, imp = m.get("medio"), _n(m.get("importe"))
+        mov_id = cheque_id = None
+
+        if medio == "transferencia":
+            mov = _de_este_cliente(con, "movimientos_banco", m.get("movimiento_id"), cid)
+            if not mov:
+                return jsonify({"error": "movimiento de banco inexistente para este cliente"}), 400
+            mov_id = mov["id"]
+            # Acá el banco se nutre del comprobante: queda con el recibo, el
+            # CUIT de la contraparte y conciliado.
+            con.execute("UPDATE movimientos_banco SET pago_id=?, cuit_contraparte=?, conciliado=1 WHERE id=?",
+                        (pago_id, ent["cuit"], mov_id))
+            con.execute(
+                "INSERT OR REPLACE INTO conciliaciones (cliente_id, movimiento_id, tipo, pago_id, metodo, motivo, fecha) "
+                "VALUES (?,?,'pago',?,'auto',?,?)",
+                (cid, mov_id, pago_id, "transferencia declarada en el comprobante", _hoy()))
+
+        elif medio == "cheque":
+            if m.get("cheque_id"):
+                ch = _de_este_cliente(con, "cheques", m["cheque_id"], cid)
+                if not ch:
+                    return jsonify({"error": "cheque inexistente para este cliente"}), 400
+                if ch["estado"] != "en_cartera":
+                    return jsonify({"error": f"el cheque {ch['numero']} no está en cartera "
+                                             f"(está '{ch['estado']}')"}), 400
+                if direccion != "pago":
+                    return jsonify({"error": "un cheque de cartera se usa para PAGAR (endoso)"}), 400
+                cheque_id = ch["id"]
+                con.execute("UPDATE cheques SET estado='endosado', pago_uso_id=?, endoso_entidad_id=? WHERE id=?",
+                            (pago_id, ent["id"], cheque_id))
+            else:
+                d = m.get("cheque") or {}
+                if not (d.get("numero") or "").strip():
+                    return jsonify({"error": "el cheque nuevo necesita número"}), 400
+                recibido = direccion == "cobro"
+                try:
+                    c2 = con.execute(
+                        "INSERT INTO cheques (cliente_id, origen, numero, banco, cuit_librador, librador_nombre, "
+                        " cuenta_id, beneficiario_entidad_id, fecha_emision, fecha_pago, importe, estado, "
+                        " pago_origen_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (cid, "recibido" if recibido else "emitido", d["numero"].strip(), d.get("banco"),
+                         # ⚠ El librador NO se completa con el CUIT del cliente. Son
+                         # roles distintos: el que firma el cheque puede no ser el
+                         # que nos lo dio. Ponerle el del cliente diría que lo firmó
+                         # él, y es un dato que quizá nadie miró. Si no se sabe,
+                         # queda vacío — el cliente ya está en el recibo.
+                         (re.sub(r"\D", "", d.get("cuit_librador") or "") or None) if recibido else None,
+                         ((d.get("librador_nombre") or "").strip() or None) if recibido else None,
+                         d.get("cuenta_id") if not recibido else None,
+                         # El emitido nace con beneficiario: es a quien le estamos pagando.
+                         None if recibido else ent["id"],
+                         d.get("fecha_emision") or fecha, (d.get("fecha_pago") or fecha)[:10], imp,
+                         "en_cartera" if recibido else "emitido", pago_id if recibido else None))
+                except sqlite3.IntegrityError:
+                    return jsonify({"error": "ese cheque ya existe (mismo banco y número)"}), 409
+                cheque_id = c2.lastrowid
+                if not recibido:
+                    con.execute("UPDATE cheques SET pago_uso_id=? WHERE id=?", (pago_id, cheque_id))
+
+        elif medio != "efectivo":
+            return jsonify({"error": f"medio desconocido: {medio}"}), 400
+
+        con.execute(
+            "INSERT INTO pago_medios (pago_id, medio, importe, movimiento_id, cheque_id) VALUES (?,?,?,?,?)",
+            (pago_id, medio, imp, mov_id, cheque_id))
+    return None
 
 
 @app.post("/api/c/pagos")
@@ -1375,86 +1463,11 @@ def api_pagos_alta():
              _n(x.get("base")) or None, _n(x.get("alicuota")) or None,
              _n(x.get("monto")), x.get("certificado"), x.get("detalle")))
 
-    for m in medios:
-        medio, imp = m.get("medio"), _n(m.get("importe"))
-        mov_id = cheque_id = None
-
-        if medio == "transferencia":
-            mov = _de_este_cliente(con, "movimientos_banco", m.get("movimiento_id"), cid)
-            if not mov:
-                con.rollback()
-                con.close()
-                return jsonify({"error": "movimiento de banco inexistente para este cliente"}), 400
-            mov_id = mov["id"]
-            # Acá el banco se nutre del comprobante: queda con el recibo, el
-            # CUIT de la contraparte y conciliado.
-            con.execute("UPDATE movimientos_banco SET pago_id=?, cuit_contraparte=?, conciliado=1 WHERE id=?",
-                        (pago_id, ent["cuit"], mov_id))
-            con.execute(
-                "INSERT OR REPLACE INTO conciliaciones (cliente_id, movimiento_id, tipo, pago_id, metodo, motivo, fecha) "
-                "VALUES (?,?,'pago',?,'auto',?,?)",
-                (cid, mov_id, pago_id, "transferencia declarada en el comprobante", _hoy()))
-
-        elif medio == "cheque":
-            if m.get("cheque_id"):
-                ch = _de_este_cliente(con, "cheques", m["cheque_id"], cid)
-                if not ch:
-                    con.rollback()
-                    con.close()
-                    return jsonify({"error": "cheque inexistente para este cliente"}), 400
-                if ch["estado"] != "en_cartera":
-                    con.rollback()
-                    con.close()
-                    return jsonify({"error": f"el cheque {ch['numero']} no está en cartera "
-                                             f"(está '{ch['estado']}')"}), 400
-                if b["direccion"] != "pago":
-                    con.rollback()
-                    con.close()
-                    return jsonify({"error": "un cheque de cartera se usa para PAGAR (endoso)"}), 400
-                cheque_id = ch["id"]
-                con.execute("UPDATE cheques SET estado='endosado', pago_uso_id=?, endoso_entidad_id=? WHERE id=?",
-                            (pago_id, ent["id"], cheque_id))
-            else:
-                d = m.get("cheque") or {}
-                if not (d.get("numero") or "").strip():
-                    con.rollback()
-                    con.close()
-                    return jsonify({"error": "el cheque nuevo necesita número"}), 400
-                recibido = b["direccion"] == "cobro"
-                try:
-                    c2 = con.execute(
-                        "INSERT INTO cheques (cliente_id, origen, numero, banco, cuit_librador, librador_nombre, "
-                        " cuenta_id, beneficiario_entidad_id, fecha_emision, fecha_pago, importe, estado, "
-                        " pago_origen_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (cid, "recibido" if recibido else "emitido", d["numero"].strip(), d.get("banco"),
-                         # ⚠ El librador NO se completa con el CUIT del cliente. Son
-                         # roles distintos: el que firma el cheque puede no ser el
-                         # que nos lo dio. Ponerle el del cliente diría que lo firmó
-                         # él, y es un dato que quizá nadie miró. Si no se sabe,
-                         # queda vacío — el cliente ya está en el recibo.
-                         (re.sub(r"\D", "", d.get("cuit_librador") or "") or None) if recibido else None,
-                         ((d.get("librador_nombre") or "").strip() or None) if recibido else None,
-                         d.get("cuenta_id") if not recibido else None,
-                         # El emitido nace con beneficiario: es a quien le estamos pagando.
-                         None if recibido else ent["id"],
-                         d.get("fecha_emision") or fecha, (d.get("fecha_pago") or fecha)[:10], imp,
-                         "en_cartera" if recibido else "emitido", pago_id if recibido else None))
-                except sqlite3.IntegrityError:
-                    con.rollback()
-                    con.close()
-                    return jsonify({"error": "ese cheque ya existe (mismo banco y número)"}), 409
-                cheque_id = c2.lastrowid
-                if not recibido:
-                    con.execute("UPDATE cheques SET pago_uso_id=? WHERE id=?", (pago_id, cheque_id))
-
-        elif medio != "efectivo":
-            con.rollback()
-            con.close()
-            return jsonify({"error": f"medio desconocido: {medio}"}), 400
-
-        con.execute(
-            "INSERT INTO pago_medios (pago_id, medio, importe, movimiento_id, cheque_id) VALUES (?,?,?,?,?)",
-            (pago_id, medio, imp, mov_id, cheque_id))
+    err_medios = _guardar_medios(con, cid, pago_id, b["direccion"], ent, medios, fecha)
+    if err_medios:
+        con.rollback()
+        con.close()
+        return err_medios
 
     con.commit()
     con.close()
@@ -2083,6 +2096,259 @@ def api_impuestos_proponer():
                     "ambiguos": len([o for o in out if not o["unico"]])})
 
 
+@app.get("/api/c/pagos/<int:pid>")
+def api_pago_ficha(pid):
+    """La ficha completa de un recibo: con qué se pagó, qué canceló, qué le
+    retuvieron, y qué se puede deshacer de cada cosa."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    p = con.execute(
+        "SELECT p.*, m.razon_social AS entidad, e.cuit FROM pagos p "
+        "JOIN entidades_cliente e ON e.id=p.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit WHERE p.id=? AND p.cliente_id=?",
+        (pid, cli["id"])).fetchone()
+    if not p:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    d = dict(p)
+    d["medios"] = filas(con.execute(
+        "SELECT pm.*, "
+        "  (SELECT c.banco || ' · ' || COALESCE(mb.descripcion,'') FROM movimientos_banco mb "
+        "     JOIN cuentas_bancarias c ON c.id=mb.cuenta_id WHERE mb.id=pm.movimiento_id) AS detalle_banco, "
+        "  (SELECT 'Nº' || ch.numero || ' · ' || COALESCE(ch.banco,'') FROM cheques ch "
+        "   WHERE ch.id=pm.cheque_id) AS detalle_cheque "
+        "FROM pago_medios pm WHERE pm.pago_id=?", (pid,)))
+    d["aplicaciones"] = filas(con.execute(
+        "SELECT a.factura_id, a.importe, f.tipo, f.letra, f.punto_venta, f.numero, "
+        "  f.fecha, f.total, "
+        "  COALESCE((SELECT SUM(x.importe) FROM pago_aplicaciones x WHERE x.factura_id=f.id),0) AS pagado "
+        "FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id WHERE a.pago_id=?",
+        (pid,)))
+    for a in d["aplicaciones"]:
+        a["saldo_factura"] = round(_n(a["total"]) - _n(a["pagado"]), 2)
+    d["retenciones"] = filas(con.execute(
+        "SELECT * FROM retenciones WHERE pago_id=? ORDER BY id", (pid,)))
+    aplicado = round(sum(_n(a["importe"]) for a in d["aplicaciones"]), 2)
+    d["aplicado"] = aplicado
+    d["a_cuenta"] = round(_n(p["total"]) - aplicado, 2)
+    con.close()
+    return jsonify(d)
+
+
+@app.delete("/api/c/pagos/<int:pid>/aplicaciones/<int:fid>")
+def api_desimputar(pid, fid):
+    """DESIMPUTAR: soltar la factura de este recibo.
+
+    ⚠ ERA EL ÚNICO ESTADO DEL QUE NO SE PODÍA SALIR (06/09). El FIFO imputa un
+    pago a cuenta contra la factura más vieja; si esa plata era para otra, la
+    vieja quedaba «saldada» sin estarlo, la que sí se cobró seguía impaga, y la
+    cuenta corriente mentía en las dos puntas. La única salida era abrir el
+    SQLite a mano.
+
+    No se borra el recibo ni la factura: se suelta el vínculo. El recibo vuelve
+    a quedar a cuenta por ese importe y la factura recupera su saldo — los dos
+    se recalculan solos porque ninguno guarda su saldo, se deriva."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "pagos", pid, cli["id"]):
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    fila = con.execute("SELECT importe FROM pago_aplicaciones WHERE pago_id=? AND factura_id=?",
+                       (pid, fid)).fetchone()
+    if not fila:
+        con.close()
+        return jsonify({"error": "ese recibo no está aplicado a esa factura"}), 404
+    con.execute("DELETE FROM pago_aplicaciones WHERE pago_id=? AND factura_id=?", (pid, fid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "liberado": _n(fila["importe"])})
+
+
+@app.post("/api/c/pagos/<int:pid>/anular")
+def api_pago_anular(pid):
+    """ANULAR un recibo, deshaciendo todo lo que había provocado.
+
+    ⚠ NO SE BORRA. El número de recibo ya se usó —puede estar impreso y en
+    manos del cliente— así que la fila queda con `anulado` y su motivo. Borrarla
+    haría que ese número se pueda emitir de nuevo, y que el papel que anda dando
+    vueltas no tenga respaldo.
+
+    Un recibo no es solo una fila: al crearse movió otras cosas, y todas se
+    deshacen acá o quedan mintiendo:
+      · las FACTURAS que canceló vuelven a deber;
+      · el MOVIMIENTO del banco que usó vuelve a estar sin conciliar y sin CUIT;
+      · el CHEQUE que trajo una cobranza se anula con él —nació de este recibo,
+        sin él no existe—;
+      · el CHEQUE que se endosó en un pago VUELVE A CARTERA, no se anula: es de
+        un tercero y sigue existiendo;
+      · las RETENCIONES se van: eran crédito fiscal de este recibo.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    p = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not p:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    if p["anulado"]:
+        con.close()
+        return jsonify({"error": "ese comprobante ya estaba anulado"}), 409
+    b = request.get_json(force=True) or {}
+    motivo = (b.get("motivo") or "").strip()
+    if not motivo:
+        con.close()
+        return jsonify({"error": "hace falta el motivo: quién anula un recibo "
+                                 "tiene que poder explicar por qué"}), 400
+
+    deshecho = []
+    n = con.execute("SELECT COUNT(*) FROM pago_aplicaciones WHERE pago_id=?", (pid,)).fetchone()[0]
+    if n:
+        con.execute("DELETE FROM pago_aplicaciones WHERE pago_id=?", (pid,))
+        deshecho.append(f"{n} factura(s) vuelven a deber")
+
+    for m in con.execute("SELECT * FROM pago_medios WHERE pago_id=?", (pid,)).fetchall():
+        if m["movimiento_id"]:
+            con.execute("UPDATE movimientos_banco SET pago_id=NULL, cuit_contraparte=NULL, "
+                        " conciliado=0 WHERE id=?", (m["movimiento_id"],))
+            con.execute("DELETE FROM conciliaciones WHERE movimiento_id=?", (m["movimiento_id"],))
+            deshecho.append("el movimiento del banco queda sin registrar otra vez")
+        if m["cheque_id"]:
+            ch = con.execute("SELECT * FROM cheques WHERE id=?", (m["cheque_id"],)).fetchone()
+            if ch and ch["pago_origen_id"] == pid:
+                # Nació en esta cobranza: sin el recibo no existe.
+                con.execute("UPDATE cheques SET estado='anulado' WHERE id=?", (m["cheque_id"],))
+                deshecho.append(f"el cheque Nº{ch['numero']} se anula con el recibo")
+            elif ch:
+                # Era de cartera y se endosó: vuelve, sigue siendo del tercero.
+                con.execute("UPDATE cheques SET estado='en_cartera', pago_uso_id=NULL, "
+                            " endoso_entidad_id=NULL WHERE id=?", (m["cheque_id"],))
+                deshecho.append(f"el cheque Nº{ch['numero']} vuelve a cartera")
+
+    con.execute("DELETE FROM pago_medios WHERE pago_id=?", (pid,))
+    nr = con.execute("SELECT COUNT(*) FROM retenciones WHERE pago_id=?", (pid,)).fetchone()[0]
+    if nr:
+        con.execute("DELETE FROM retenciones WHERE pago_id=?", (pid,))
+        deshecho.append(f"{nr} retención(es) dejan de computarse")
+
+    con.execute("UPDATE pagos SET anulado=1, anulado_motivo=?, anulado_fecha=?, total=0 "
+                "WHERE id=?", (motivo, _hoy(), pid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "deshecho": deshecho})
+
+
+@app.post("/api/c/pagos/<int:pid>/medios")
+def api_pago_editar_medios(pid):
+    """Cambiar CON QUÉ se pagó, sin tocar a qué facturas se aplicó.
+
+    El caso de todos los días: se cargó como efectivo y en realidad fue
+    transferencia, o el número del cheque salió mal. Hoy había que anular y
+    cargar de nuevo, perdiendo el número de recibo.
+
+    ⚠ Se rehace TODO el bloque de medios, no se parchea uno: los efectos
+    laterales (el movimiento conciliado, el cheque endosado) hay que soltarlos
+    antes de volver a atarlos, y hacerlo de a uno deja mitades colgadas."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    p = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not p:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    if p["anulado"]:
+        con.close()
+        return jsonify({"error": "no se editan los medios de un recibo anulado"}), 400
+    b = request.get_json(force=True)
+    medios = b.get("medios") or []
+    if not medios:
+        con.close()
+        return jsonify({"error": "hace falta al menos un medio"}), 400
+
+    aplicado = _n(con.execute("SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones "
+                              "WHERE pago_id=?", (pid,)).fetchone()[0])
+    retenido = _n(con.execute("SELECT COALESCE(SUM(monto),0) FROM retenciones "
+                              "WHERE pago_id=?", (pid,)).fetchone()[0])
+    nuevo_total = round(sum(_n(m.get("importe")) for m in medios), 2)
+    if aplicado and abs(nuevo_total + retenido - aplicado) > 0.01:
+        con.close()
+        return jsonify({"error": f"los medios nuevos suman {nuevo_total}"
+                                 + (f" más {retenido} de retenciones" if retenido else "")
+                                 + f", y este recibo tiene {aplicado} aplicado a facturas. "
+                                   "Soltá alguna factura primero, o ajustá el importe."}), 400
+
+    # Soltar lo viejo
+    for m in con.execute("SELECT * FROM pago_medios WHERE pago_id=?", (pid,)).fetchall():
+        if m["movimiento_id"]:
+            con.execute("UPDATE movimientos_banco SET pago_id=NULL, cuit_contraparte=NULL, "
+                        " conciliado=0 WHERE id=?", (m["movimiento_id"],))
+            con.execute("DELETE FROM conciliaciones WHERE movimiento_id=?", (m["movimiento_id"],))
+        if m["cheque_id"]:
+            ch = con.execute("SELECT * FROM cheques WHERE id=?", (m["cheque_id"],)).fetchone()
+            if ch and ch["pago_origen_id"] == pid:
+                con.execute("DELETE FROM cheques WHERE id=?", (m["cheque_id"],))
+            elif ch:
+                con.execute("UPDATE cheques SET estado='en_cartera', pago_uso_id=NULL, "
+                            " endoso_entidad_id=NULL WHERE id=?", (m["cheque_id"],))
+    con.execute("DELETE FROM pago_medios WHERE pago_id=?", (pid,))
+
+    # Y atar lo nuevo, con las mismas reglas del alta
+    ent = con.execute("SELECT * FROM entidades_cliente WHERE id=?", (p["entidad_id"],)).fetchone()
+    err2 = _guardar_medios(con, cli["id"], pid, p["direccion"], ent, medios, p["fecha"])
+    if err2:
+        con.rollback()
+        con.close()
+        return err2
+    con.execute("UPDATE pagos SET total=? WHERE id=?", (round(nuevo_total + retenido, 2), pid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "total": round(nuevo_total + retenido, 2)})
+
+
+@app.delete("/api/c/conciliacion/<int:cid_conc>")
+def api_desconciliar(cid_conc):
+    """Deshacer una conciliación: el movimiento vuelve a estar sin explicar.
+
+    Una conciliación equivocada es peor que ninguna: el movimiento figura
+    resuelto y deja de aparecer en la lista de lo que falta mirar."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    c = _de_este_cliente(con, "conciliaciones", cid_conc, cli["id"])
+    if not c:
+        con.close()
+        return jsonify({"error": "conciliación inexistente para este cliente"}), 404
+    con.execute("UPDATE movimientos_banco SET conciliado=0 WHERE id=?", (c["movimiento_id"],))
+    # El recibo que la conciliación fabricó se va con ella: existía solo para
+    # explicar ese movimiento.
+    if c["pago_id"]:
+        pg = con.execute("SELECT numero FROM pagos WHERE id=?", (c["pago_id"],)).fetchone()
+        if pg and (pg["numero"] or "").startswith("AUTO-"):
+            con.execute("DELETE FROM pago_aplicaciones WHERE pago_id=?", (c["pago_id"],))
+            con.execute("DELETE FROM pago_medios WHERE pago_id=?", (c["pago_id"],))
+            con.execute("DELETE FROM pagos WHERE id=?", (c["pago_id"],))
+            con.execute("UPDATE movimientos_banco SET pago_id=NULL, cuit_contraparte=NULL "
+                        "WHERE id=?", (c["movimiento_id"],))
+    if c["cheque_id"]:
+        con.execute("UPDATE cheques SET estado='depositado' WHERE id=? AND estado='cobrado'",
+                    (c["cheque_id"],))
+    con.execute("DELETE FROM conciliaciones WHERE id=?", (cid_conc,))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
 # ══ CONCILIACIÓN ════════════════════════════════════════════════════════════
 def _candidatos(con, cid, mov):
     """Todo lo que podría explicar un movimiento del banco. Devuelve una lista
@@ -2201,6 +2467,33 @@ def api_conciliacion_ver():
                      "unico": len(cands) == 1})
     con.close()
     return jsonify(pend)
+
+
+@app.get("/api/c/conciliacion/hechas")
+def api_conciliaciones_hechas():
+    """Las que ya se hicieron, para poder revisarlas y deshacerlas.
+
+    Faltaba la lista: se conciliaba y el movimiento desaparecía de la pantalla.
+    Una conciliación equivocada es peor que ninguna —el movimiento figura
+    resuelto y deja de aparecer en lo que hay que mirar— así que tiene que
+    poder verse y soltarse."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    r = filas(con.execute(
+        "SELECT co.*, m.fecha AS mov_fecha, m.importe, m.descripcion, c.banco, "
+        "  (SELECT p.numero FROM pagos p WHERE p.id=co.pago_id) AS recibo, "
+        "  (SELECT ch.numero FROM cheques ch WHERE ch.id=co.cheque_id) AS cheque_nro, "
+        "  (SELECT f.tipo || ' ' || COALESCE(f.punto_venta,'') || '-' || COALESCE(f.numero,'') "
+        "   FROM facturas f WHERE f.id=co.factura_id) AS factura "
+        "FROM conciliaciones co JOIN movimientos_banco m ON m.id=co.movimiento_id "
+        "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "WHERE co.cliente_id=? ORDER BY co.fecha DESC, co.id DESC", (cli["id"],)))
+    con.close()
+    return jsonify({"conciliaciones": r, "total": len(r),
+                    "automaticas": len([x for x in r if x["metodo"] == "auto"])})
 
 
 @app.post("/api/c/conciliacion/auto")

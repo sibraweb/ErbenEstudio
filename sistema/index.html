@@ -248,7 +248,11 @@ async function api(ruta, opts){
   const antes = marca();
   const r = await fetch(url, opts);
   const j = await r.json().catch(() => ({error:'respuesta ilegible del servidor'}));
-  if (marca() !== antes && !(opts && opts.method === 'POST')) return new Promise(() => {});
+  // Se abandona la respuesta tardía SOLO si es una lectura: una escritura ya
+  // pasó y su resultado hay que verlo aunque el usuario haya cambiado de
+  // pantalla. Antes decía `!== 'POST'` y un DELETE se descartaba en silencio.
+  const escribe = opts && opts.method && opts.method !== 'GET';
+  if (marca() !== antes && !escribe) return new Promise(() => {});
   if (!r.ok) throw new Error(j.error || ('error ' + r.status));
   return j;
 }
@@ -1715,16 +1719,21 @@ async function vPagos(){
         <div style="margin-top:16px"><button onclick="guardarPago()">Guardar comprobante</button></div>
       </div>
     </div>
-    ${ps.length ? `<div class="panel"><div class="panel-h"><b>${ps.length} comprobante(s)</b></div>
+    ${ps.length ? `<div class="panel"><div class="panel-h"><b>${ps.length} comprobante(s)</b>
+      <span class="mini">clic en una fila para ver la ficha, corregirla o anularla</span></div>
       ${tabla(['Fecha','Tipo','Entidad','Nº','Medios','Aplica a','Retenciones','Total'],
         ps.map(p => [fecha(p.fecha),
-          p.direccion === 'cobro' ? '<span class="badge b-ok">cobranza</span>' : '<span class="badge b-warn">pago</span>',
+          p.anulado ? '<span class="badge b-bad">anulado</span>'
+            : p.direccion === 'cobro' ? '<span class="badge b-ok">cobranza</span>' : '<span class="badge b-warn">pago</span>',
           esc(p.entidad), esc(p.numero||'—'),
           `<span class="mini">${p.medios.map(m => esc(m.medio)).join(', ')}</span>`,
           `<span class="mini">${p.aplicaciones.map(a => `${esc(a.tipo)} ${esc(a.numero||a.factura_id)}`).join(', ') || '—'}</span>`,
-          `<button class="g xs" onclick="verRetenciones(${p.id}, '${esc(p.numero||('recibo '+p.id))}')">${
-            p.retenido ? plata(p.retenido) : 'cargar'}</button>`,
-          {n:plata(p.total)}]))}
+          p.anulado ? '<span class="mini">—</span>'
+            : `<button class="g xs" onclick="event.stopPropagation();verRetenciones(${p.id}, '${esc(p.numero||('recibo '+p.id))}')">${
+              p.retenido ? plata(p.retenido) : 'cargar'}</button>`,
+          {n:plata(p.total)}]),
+        {onclick: i => `verRecibo(${ps[i].id})`,
+         fila: i => ps[i].anulado ? ' style="opacity:.45"' : ''})}
     </div>` : '<div class="panel"><div class="vacio">Sin pagos ni cobranzas.</div></div>'}`);
 }
 /* Abrir ya elige la dirección: antes había que abrir el panel y DESPUÉS
@@ -1823,6 +1832,210 @@ async function guardarPago(){
     await post('/api/c/pagos', {direccion:pDir, entidad_id:+val('np-ent'), fecha:val('np-fecha'),
       numero:val('np-num'), aplicaciones, medios});
     toast('Comprobante guardado — el banco quedó actualizado'); pMedios = []; vPagos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ══ LA FICHA DE UN RECIBO, Y CÓMO DESHACER ══
+   Era el único lugar del sistema del que no se podía salir operando: si el
+   FIFO imputaba mal, la factura vieja quedaba «saldada» sin estarlo y había
+   que abrir la base a mano.
+
+   Regla de estas pantallas: **cada botón dice qué va a pasar ANTES de
+   hacerlo**. Nadie tiene que adivinar qué se lleva puesto «Anular». */
+async function verRecibo(pid){
+  let d;
+  try{ d = await api(`/api/c/pagos/${pid}`); }
+  catch(e){ return toast(e.message, true); }
+  const viejo = $('#modal-rec'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-rec';
+  const esCobro = d.direccion === 'cobro';
+  el.innerHTML = `<div class="box" style="max-width:820px">
+    <h3>${esCobro ? 'Cobranza' : 'Orden de pago'} ${esc(d.numero || '#'+d.id)}</h3>
+    <div class="mini" style="margin-bottom:12px">${esc(d.entidad)} · ${fecha(d.fecha)} ·
+      total <b>${plata(d.total)}</b>
+      ${d.a_cuenta > 0.01 ? ` · <b class="amb">${plata(d.a_cuenta)} a cuenta</b>` : ''}
+      ${d.anulado ? ` · <span class="badge b-bad">ANULADO</span> ${esc(d.anulado_motivo||'')}` : ''}</div>
+
+    ${d.anulado ? `<div class="aviso">Este comprobante está anulado desde el
+      ${fecha(d.anulado_fecha)}. Se conserva —el número ya se usó— pero no cuenta en ningún saldo.</div>`
+    : `
+    <div class="panel" style="margin-bottom:14px"><div class="panel-h">
+      <b>Con qué se pagó</b>
+      <button class="g xs" onclick="corregirMedios(${pid})">Corregir</button></div>
+      ${d.medios.length ? tabla(['Medio','Detalle','Importe'], d.medios.map(m =>
+        [esc(m.medio), esc(m.detalle_banco || m.detalle_cheque || '—'), {n:plata(m.importe)}]))
+        : '<div class="vacio">Sin medios.</div>'}
+    </div>
+
+    <div class="panel" style="margin-bottom:14px"><div class="panel-h">
+      <b>Qué facturas cancela</b>
+      <span class="mini">${plata(d.aplicado)} aplicado</span></div>
+      ${d.aplicaciones.length ? tabla(['Comprobante','Fecha','Total','Aplica','Le queda','']
+        , d.aplicaciones.map(a => [
+          `${esc(a.tipo)} ${esc(a.letra||'')} ${esc(a.punto_venta||'')}-${esc(a.numero||'')}`,
+          fecha(a.fecha), {n:plata(a.total)}, {n:plata(a.importe)},
+          {n: a.saldo_factura > 0.01 ? `<span class="neg">${plata(a.saldo_factura)}</span>`
+             : '<span class="badge b-ok">saldada</span>'},
+          `<button class="g xs" onclick="soltarFactura(${pid},${a.factura_id},'${esc((a.tipo||'')+' '+(a.punto_venta||'')+'-'+(a.numero||''))}',${a.importe})">Soltar</button>`]))
+        : `<div class="vacio">No cancela ninguna factura todavía — está a cuenta.<br>
+           <span class="mini">Se imputa desde la lista de comprobantes.</span></div>`}
+      ${d.aplicaciones.length ? `<div class="panel-b"><div class="mini">
+        <b>Soltar</b> desengancha esa factura de este recibo: la factura vuelve a deber
+        y el recibo queda a cuenta por ese importe. No se borra nada.</div></div>` : ''}
+    </div>
+
+    ${d.retenciones.length ? `<div class="panel" style="margin-bottom:14px">
+      <div class="panel-h"><b>Retenciones</b>
+        <button class="g xs" onclick="$('#modal-rec').remove();verRetenciones(${pid},'${esc(d.numero||('recibo '+pid))}')">Editar</button></div>
+      ${tabla(['Concepto','Certificado','Importe'], d.retenciones.map(r =>
+        [esc((r.tipo||'').replace(/_/g,' ')),
+         r.certificado ? esc(r.certificado) : '<span class="neg">sin certificado</span>',
+         {n:plata(r.monto)}]))}
+    </div>` : ''}
+
+    <div class="aviso" style="border-left-color:var(--bad)">
+      <b>Anular este comprobante</b> deshace todo lo que provocó:
+      ${d.aplicaciones.length ? `<br>· ${d.aplicaciones.length} factura(s) vuelven a deber` : ''}
+      ${d.medios.some(m => m.movimiento_id) ? '<br>· el movimiento del banco queda sin registrar otra vez' : ''}
+      ${d.medios.some(m => m.cheque_id) ? (esCobro
+        ? '<br>· el cheque que trajo esta cobranza se anula con ella'
+        : '<br>· el cheque endosado vuelve a cartera') : ''}
+      ${d.retenciones.length ? `<br>· ${d.retenciones.length} retención(es) dejan de computarse` : ''}
+      <br><span class="mini">El comprobante NO se borra: el número ya se usó y queda con su
+      motivo, para que el papel que anda dando vueltas tenga respaldo.</span></div>`}
+
+    <div class="row-act" style="justify-content:space-between;margin-top:16px">
+      ${d.anulado ? '<span></span>'
+        : `<button class="g" onclick="anularRecibo(${pid},'${esc(d.numero||('#'+pid))}')"
+             style="border-color:var(--bad);color:var(--bad)">Anular este comprobante</button>`}
+      <button onclick="$('#modal-rec').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+}
+
+async function soltarFactura(pid, fid, etiqueta, importe){
+  const r = await modal('Soltar la factura del recibo',
+    `Vas a desenganchar <b>${esc(etiqueta)}</b> de este comprobante.<br><br>`
+    + `Después de esto: la factura <b>vuelve a deber ${plata(importe)}</b> y el recibo queda `
+    + `<b>a cuenta</b> por ese importe, listo para imputar a la que corresponda.<br><br>`
+    + `No se borra ni la factura ni el recibo.`,
+    [], 'Soltar');
+  if (!r) return;
+  try{
+    await api(`/api/c/pagos/${pid}/aplicaciones/${fid}`, {method:'DELETE'});
+    toast('Soltada — la factura volvió a deber');
+    $('#modal-rec')?.remove(); verRecibo(pid);
+  }catch(e){ toast(e.message, true); }
+}
+
+async function anularRecibo(pid, etiqueta){
+  const r = await modal('Anular el comprobante ' + etiqueta,
+    'Se deshace todo lo que este comprobante provocó, y queda marcado como anulado '
+    + '<b>sin borrarse</b> — el número ya se usó.<br><br>'
+    + 'Hace falta el motivo: quien anula un recibo tiene que poder explicar por qué.',
+    [{id:'md-motivo', label:'Por qué se anula',
+      html:'<input id="md-motivo" placeholder="ej: se cargó dos veces, el cliente anuló la transferencia…">'}],
+    'Anular');
+  if (!r) return;
+  if (!(r['md-motivo'] || '').trim()) return toast('Sin motivo no se anula', true);
+  try{
+    const res = await post(`/api/c/pagos/${pid}/anular`, {motivo: r['md-motivo']});
+    $('#modal-rec')?.remove();
+    toast('Anulado' + (res.deshecho?.length ? ' · ' + res.deshecho[0] : ''));
+    vPagos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* Corregir los medios sin perder el número de recibo. El caso de todos los
+   días: se cargó efectivo y fue transferencia, o el cheque salió con otro
+   número. Antes había que anular y cargar de nuevo. */
+let CM = [];
+async function corregirMedios(pid){
+  const d = await api(`/api/c/pagos/${pid}`);
+  CM = d.medios.map(m => ({medio:m.medio, importe:m.importe,
+                           movimiento_id:m.movimiento_id, cheque_id:m.cheque_id}));
+  const viejo = $('#modal-cm'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-cm';
+  el.innerHTML = `<div class="box" style="max-width:720px">
+    <h3>Con qué se pagó ${esc(d.numero || '#'+pid)}</h3>
+    <div class="mini" style="margin-bottom:10px">Se rehace el bloque entero: lo viejo se suelta
+      —el movimiento vuelve a estar sin conciliar, el cheque endosado vuelve a cartera— y se
+      ata lo nuevo.
+      ${d.aplicado ? `<br><b>Este recibo tiene ${plata(d.aplicado)} aplicado a facturas</b>, así que
+        los medios nuevos tienen que sumar eso mismo. Si querés cambiar el importe, soltá alguna
+        factura primero.` : ''}</div>
+    <div id="cm-lista"></div>
+    <div class="row-act" style="margin-top:10px">
+      <button class="g xs" onclick="cmAgregar('efectivo')">+ Efectivo</button>
+      <button class="g xs" onclick="cmAgregar('transferencia')">+ Transferencia</button>
+      <button class="g xs" onclick="cmAgregar('cheque')">+ Cheque</button>
+      <span class="mini" id="cm-suma" style="margin-left:8px"></span></div>
+    <div class="row-act" style="justify-content:flex-end;margin-top:16px">
+      <button class="g" onclick="$('#modal-cm').remove()">Cancelar</button>
+      <button onclick="cmGuardar(${pid})">Guardar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+  cmPintar(d.aplicado);
+}
+function cmPintar(aplicado){
+  const c = $('#cm-lista'); if (!c) return;
+  c.innerHTML = CM.map((m,i) => `
+    <div class="cand" style="display:block">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <b>${esc(m.medio)}</b>
+        <button class="g xs" onclick="CM.splice(${i},1);cmPintar(${aplicado})">Quitar</button></div>
+      <div class="f">
+        <div><label>Importe</label><input type="number" step="0.01" value="${m.importe ?? ''}"
+          oninput="CM[${i}].importe=parseFloat(this.value)||0;cmSuma(${aplicado})"></div>
+        ${m.medio === 'transferencia' ? `<div class="full"><label>Movimiento del banco</label>
+          <select id="cm-mov-${i}" onchange="CM[${i}].movimiento_id=+this.value||null">
+            <option value="">— elegir —</option></select></div>` : ''}
+        ${m.medio === 'cheque' ? `<div class="full"><label>Cheque de cartera</label>
+          <select id="cm-chq-${i}" onchange="CM[${i}].cheque_id=+this.value||null">
+            <option value="">— elegir —</option></select></div>` : ''}
+      </div></div>`).join('') || '<div class="vacio">Sin medios. Agregá al menos uno.</div>';
+  CM.forEach((m,i) => {
+    if (m.medio === 'transferencia') api('/api/c/movimientos?pendientes=1').then(ms => {
+      const s = $('#cm-mov-'+i); if (!s) return;
+      s.innerHTML = '<option value="">— elegir —</option>' + ms.map(x =>
+        `<option value="${x.id}"${x.id===m.movimiento_id?' selected':''}>${fecha(x.fecha)} · ${esc(x.banco)} · ${plata(x.importe)}</option>`).join('');
+    });
+    if (m.medio === 'cheque') api('/api/c/cheques?estado=en_cartera').then(cs => {
+      const s = $('#cm-chq-'+i); if (!s) return;
+      s.innerHTML = '<option value="">— elegir —</option>' + cs.map(x =>
+        `<option value="${x.id}"${x.id===m.cheque_id?' selected':''}>Nº${esc(x.numero)} · ${plata(x.importe)}</option>`).join('');
+    });
+  });
+  cmSuma(aplicado);
+}
+function cmSuma(aplicado){
+  const s = CM.reduce((a,m) => a + (parseFloat(m.importe)||0), 0);
+  const el = $('#cm-suma'); if (!el) return;
+  el.innerHTML = `suman ${plata(s)}` + (aplicado
+    ? (Math.abs(s - aplicado) < 0.01 ? ' · <b class="pos">coincide con lo aplicado</b>'
+       : ` · <b class="neg">tienen que sumar ${plata(aplicado)}</b>`) : '');
+}
+function cmAgregar(medio){ CM.push({medio, importe:0}); cmPintar(0); }
+async function cmGuardar(pid){
+  try{
+    await post(`/api/c/pagos/${pid}/medios`, {medios: CM});
+    $('#modal-cm')?.remove(); $('#modal-rec')?.remove();
+    toast('Medios corregidos'); vPagos();
+  }catch(e){ toast(e.message, true); }
+}
+
+async function deshacerConciliacion(cid, detalle){
+  const r = await modal('Deshacer la conciliación',
+    `El movimiento <b>${esc(detalle)}</b> vuelve a la lista de lo que falta explicar.<br><br>`
+    + 'Si la conciliación había fabricado un recibo automático, ese recibo se va con ella.<br><br>'
+    + '<b>Una conciliación equivocada es peor que ninguna</b>: el movimiento figura resuelto '
+    + 'y deja de aparecer en lo que hay que mirar.',
+    [], 'Deshacer');
+  if (!r) return;
+  try{ await api(`/api/c/conciliacion/${cid}`, {method:'DELETE'});
+    toast('Deshecha — el movimiento volvió a la lista'); vTesoreria();
   }catch(e){ toast(e.message, true); }
 }
 
@@ -1980,7 +2193,10 @@ async function trGuardar(pid){
    El conciliador vive DENTRO de Tesorería: es un cruce de plata, no una
    pantalla aparte. */
 async function tConc(){
-  const ps = await api('/api/c/conciliacion');
+  const [ps, hechas] = await Promise.all([
+    api('/api/c/conciliacion'),
+    api('/api/c/conciliacion/hechas').catch(() => ({conciliaciones:[], total:0, automaticas:0})),
+  ]);
   const unicos = ps.filter(p => p.unico).length, ambiguos = ps.filter(p => p.candidatos.length > 1).length;
   panelT(`
     <div class="aviso">Se concilia solo lo que tiene <b>un único</b> candidato. Con dos o más decide una
@@ -2006,7 +2222,26 @@ async function tConc(){
           : '<span class="mini">Nada coincide en monto, fecha y CUIT. Puede ser un gasto bancario, o falta cargar la factura.</span>'}
         </div>
       </div>`).join('')
-      : '<div class="panel"><div class="vacio">Todo conciliado.</div></div>'}`);
+      : '<div class="panel"><div class="vacio">Todo conciliado.</div></div>'}
+
+    ${hechas.total ? `<div class="panel" style="margin-top:20px"><div class="panel-h">
+      <b>Las que ya se hicieron</b>
+      <span class="mini">${hechas.total} · ${hechas.automaticas} automática(s)</span></div>
+      <div class="panel-b"><div class="mini">Faltaba poder verlas: se conciliaba y el movimiento
+        desaparecía de la pantalla. <b>Una conciliación equivocada es peor que ninguna</b> — el
+        movimiento figura resuelto y deja de aparecer en lo que hay que mirar.</div></div>
+      ${tabla(['Fecha','Banco','Movimiento','Importe','Con qué','Cómo',''],
+        hechas.conciliaciones.map(c => [
+          fecha(c.mov_fecha), esc(c.banco), esc((c.descripcion||'').slice(0,38)),
+          {n:`<span class="${c.importe<0?'neg':'pos'}">${plata(c.importe)}</span>`},
+          esc(c.recibo ? 'recibo ' + c.recibo
+            : c.cheque_nro ? 'cheque Nº' + c.cheque_nro
+            : c.factura ? c.factura : c.tipo),
+          c.metodo === 'auto' ? '<span class="badge b-mut">automática</span>'
+            : '<span class="badge b-ok">a mano</span>',
+          `<button class="g xs" onclick="deshacerConciliacion(${c.id},'${
+            esc((c.descripcion||'movimiento').slice(0,30))}')">Deshacer</button>`]))}
+    </div>` : ''}`);
 }
 async function conciliarAuto(){
   try{ const r = await post('/api/c/conciliacion/auto', {});

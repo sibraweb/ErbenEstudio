@@ -227,6 +227,13 @@ CREATE TABLE pagos (
     fecha       TEXT NOT NULL,
     numero      TEXT,                          -- nro de recibo / orden de pago
     total       REAL NOT NULL,
+    -- ⚠ UN RECIBO SE ANULA, NO SE BORRA. El número ya se usó y puede estar
+    -- impreso en manos del cliente: borrar la fila haría que ese número se
+    -- pueda emitir de nuevo y que el papel que anda dando vueltas no tenga
+    -- respaldo. Anulado queda, con su motivo y su fecha.
+    anulado        INTEGER NOT NULL DEFAULT 0,
+    anulado_motivo TEXT,
+    anulado_fecha  TEXT,
     nota        TEXT
 );
 CREATE INDEX ix_pagos_cliente ON pagos(cliente_id, fecha);
