@@ -345,6 +345,22 @@ def _migrar(con):
             CREATE INDEX ix_chequeras ON chequeras(cliente_id, activa);""")
         con.commit()
 
+    # ── la clasificación de los movimientos ──
+    cm = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
+    if "rango" not in cm:
+        print("  migrando: clasificación de los movimientos del banco…")
+        con.execute("ALTER TABLE movimientos_banco ADD COLUMN rango TEXT")
+        con.execute("ALTER TABLE movimientos_banco ADD COLUMN subrango TEXT")
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS reglas_clasificacion (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                patron TEXT NOT NULL, rango TEXT NOT NULL, subrango TEXT NOT NULL,
+                prioridad INTEGER NOT NULL DEFAULT 100,
+                activa INTEGER NOT NULL DEFAULT 1, nota TEXT);
+            CREATE INDEX IF NOT EXISTS ix_reglas ON reglas_clasificacion(cliente_id, prioridad);""")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -829,6 +845,251 @@ def api_cuentas_alta():
     cid_cta = cur.lastrowid
     con.close()
     return jsonify({"ok": True, "id": cid_cta})
+
+
+# ══ CLASIFICACIÓN DE MOVIMIENTOS ═══════════════════════════════════════════
+# El extracto dice «DB.AUT.SERV.AGUA» y nadie lo mira dos veces. Clasificado
+# dice «Servicios · Agua», y recién ahí el mes se puede leer.
+#
+# El vocabulario es el del ERP: un RANGO grueso y un SUBRANGO que es el
+# concepto. Se deja abierto a propósito —cada cliente tiene sus rubros— pero
+# los rangos son fijos, porque de ellos dependen los bloques del resumen.
+RANGOS = ["Ingreso", "Egreso", "Impuesto", "Gasto Bancario", "Transferencia interna"]
+
+
+def _aplicar_reglas(con, cid, solo=None):
+    """Aplica las reglas sobre los movimientos del cliente.
+
+    ⚠ Se aplican de MAYOR a MENOR prioridad para que la de prioridad más baja
+    (número menor) sea la última en escribir y por lo tanto GANE. Al revés, la
+    regla general le pisaba el resultado a la específica.
+
+    Devuelve cuántos movimientos cambiaron de clasificación."""
+    q = "SELECT * FROM reglas_clasificacion WHERE cliente_id=? AND activa=1"
+    args = [cid]
+    if solo:
+        q += " AND id=?"
+        args.append(solo)
+    cambiados = 0
+    for r in con.execute(q + " ORDER BY prioridad DESC, id DESC", args).fetchall():
+        cur = con.execute(
+            "UPDATE movimientos_banco SET rango=?, subrango=? "
+            "WHERE cliente_id=? AND LOWER(COALESCE(descripcion,'')) LIKE '%'||LOWER(?)||'%' "
+            "AND (COALESCE(rango,'') <> ? OR COALESCE(subrango,'') <> ?)",
+            (r["rango"], r["subrango"], cid, r["patron"], r["rango"], r["subrango"]))
+        cambiados += cur.rowcount
+    return cambiados
+
+
+@app.get("/api/c/clasificacion/reglas")
+def api_reglas():
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    r = filas(con.execute(
+        "SELECT g.*, (SELECT COUNT(*) FROM movimientos_banco m WHERE m.cliente_id=g.cliente_id "
+        "   AND LOWER(COALESCE(m.descripcion,'')) LIKE '%'||LOWER(g.patron)||'%') AS alcanza "
+        "FROM reglas_clasificacion g WHERE g.cliente_id=? ORDER BY g.prioridad, g.id",
+        (cli["id"],)))
+    sin = _n(con.execute(
+        "SELECT COUNT(*) FROM movimientos_banco WHERE cliente_id=? "
+        "AND (rango IS NULL OR rango='')", (cli["id"],)).fetchone()[0])
+    con.close()
+    return jsonify({"reglas": r, "rangos": RANGOS, "sin_clasificar": int(sin)})
+
+
+@app.post("/api/c/clasificacion/reglas")
+def api_regla_alta():
+    """Una regla nueva, y se aplica para atrás.
+
+    Aplicarla retroactivamente es el punto: sirve para que el trabajo de
+    clasificar una vez valga para todo lo que ya entró y para todo lo que
+    venga. Si solo valiera de acá en adelante, nadie la cargaría."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    for campo in ("patron", "rango", "subrango"):
+        if not (b.get(campo) or "").strip():
+            con.close()
+            return jsonify({"error": f"falta {campo}"}), 400
+    if b["rango"] not in RANGOS:
+        con.close()
+        return jsonify({"error": f"rango desconocido: {b['rango']}"}), 400
+    cur = con.execute(
+        "INSERT INTO reglas_clasificacion (cliente_id, patron, rango, subrango, prioridad, "
+        " activa, nota) VALUES (?,?,?,?,?,1,?)",
+        (cli["id"], b["patron"].strip(), b["rango"].strip(), b["subrango"].strip(),
+         int(b.get("prioridad") or 100), b.get("nota")))
+    rid = cur.lastrowid
+    cambiados = _aplicar_reglas(con, cli["id"], solo=rid)
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "id": rid, "clasificados": cambiados})
+
+
+@app.delete("/api/c/clasificacion/reglas/<int:rid>")
+def api_regla_baja(rid):
+    """Borra la regla. Lo que ya clasificó QUEDA: la regla es el atajo, no el
+    dueño del dato. Borrarla y desclasificar todo castigaría al que corrige."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "reglas_clasificacion", rid, cli["id"]):
+        con.close()
+        return jsonify({"error": "regla inexistente para este cliente"}), 404
+    con.execute("DELETE FROM reglas_clasificacion WHERE id=?", (rid,))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/c/clasificacion/aplicar")
+def api_reclasificar():
+    """Pasa todas las reglas de nuevo sobre todo."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    n = _aplicar_reglas(con, cli["id"])
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "clasificados": n})
+
+
+@app.post("/api/c/movimientos/<int:mid>/clasificar")
+def api_clasificar_uno(mid):
+    """Clasificar un movimiento a mano, y ofrecer hacerlo regla."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "movimientos_banco", mid, cli["id"]):
+        con.close()
+        return jsonify({"error": "movimiento inexistente para este cliente"}), 404
+    b = request.get_json(force=True)
+    if b.get("rango") and b["rango"] not in RANGOS:
+        con.close()
+        return jsonify({"error": f"rango desconocido: {b['rango']}"}), 400
+    con.execute("UPDATE movimientos_banco SET rango=?, subrango=? WHERE id=?",
+                (b.get("rango"), b.get("subrango"), mid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/c/bancos/mes-detalle/<mes>")
+def api_banco_mes_detalle(mes):
+    """EL MES DEL BANCO como se mira: qué entró, qué salió y qué se pagó de
+    impuestos, agrupado por concepto.
+
+    Traído del módulo Bancos del ERP. Dos decisiones que se copian porque son
+    criterio, no estilo:
+
+    · se agrupa TAMBIÉN POR SIGNO, para que un cargo y su devolución no se
+      fundan en una cifra sola: se ven las dos líneas y el bloque queda
+      neteado, que es como se lee una nota de crédito de impuesto;
+    · el IVA del bloque fiscal NO sale del banco sino de las FACTURAS. El
+      banco no sabe de IVA; mezclarlos daría un número que no es ninguno de
+      los dos.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not re.fullmatch(r"\d{4}-\d{2}", mes or ""):
+        con.close()
+        return jsonify({"error": "el mes va como AAAA-MM"}), 400
+    cid = cli["id"]
+
+    meses = [r["mes"] for r in con.execute(
+        "SELECT DISTINCT substr(fecha,1,7) AS mes FROM movimientos_banco "
+        "WHERE cliente_id=? ORDER BY mes DESC", (cid,))]
+
+    bloques = {"ingresos": [], "egresos": [], "impuestos": [], "bancarios": []}
+    for r in con.execute(
+            "SELECT COALESCE(rango,'') AS rango, COALESCE(subrango,'(sin clasificar)') AS subrango, "
+            "  CASE WHEN importe > 0 THEN 1 ELSE -1 END AS signo, "
+            "  COUNT(*) AS n, ROUND(SUM(importe),2) AS importe "
+            "FROM movimientos_banco WHERE cliente_id=? AND substr(fecha,1,7)=? "
+            "GROUP BY 1,2,3 ORDER BY ABS(SUM(importe)) DESC", (cid, mes)):
+        d = {"concepto": r["subrango"], "n": r["n"], "importe": _n(r["importe"])}
+        if r["rango"] == "Impuesto":
+            bloques["impuestos"].append(d)
+        elif r["rango"] == "Gasto Bancario":
+            bloques["bancarios"].append(d)
+        elif r["signo"] > 0:
+            bloques["ingresos"].append(d)
+        else:
+            bloques["egresos"].append(d)
+
+    tot = {k: round(sum(x["importe"] for x in v), 2) for k, v in bloques.items()}
+    tot["neto"] = round(tot["ingresos"] + tot["egresos"] + tot["impuestos"]
+                        + tot["bancarios"], 2)
+
+    # ── los cheques del mes, de los dos lados ────────────────────────────────
+    pagados = filas(con.execute(
+        "SELECT ch.numero, ch.fecha_pago AS fecha, ch.importe, "
+        "  (SELECT mb.razon_social FROM entidades_cliente eb "
+        "     JOIN maestro_entidades mb ON mb.cuit=eb.cuit "
+        "   WHERE eb.id=ch.beneficiario_entidad_id) AS quien "
+        "FROM cheques ch WHERE ch.cliente_id=? AND ch.origen='emitido' "
+        "AND ch.estado='cobrado' AND substr(ch.fecha_pago,1,7)=? ORDER BY ch.fecha_pago",
+        (cid, mes)))
+    cobrados = filas(con.execute(
+        "SELECT ch.numero, COALESCE(ch.deposito_fecha, ch.fecha_pago) AS fecha, ch.importe, "
+        "  COALESCE(ml.razon_social, ch.librador_nombre) AS quien "
+        "FROM cheques ch LEFT JOIN maestro_entidades ml ON ml.cuit=ch.cuit_librador "
+        "WHERE ch.cliente_id=? AND ch.origen='recibido' AND ch.estado='cobrado' "
+        "AND substr(COALESCE(ch.deposito_fecha, ch.fecha_pago),1,7)=? ORDER BY 2", (cid, mes)))
+    depositos = filas(con.execute(
+        "SELECT ch.numero, ch.deposito_fecha AS fecha, ch.importe, c.banco, "
+        "  COALESCE(ml.razon_social, ch.librador_nombre) AS quien "
+        "FROM cheques ch LEFT JOIN cuentas_bancarias c ON c.id=ch.deposito_cuenta_id "
+        "LEFT JOIN maestro_entidades ml ON ml.cuit=ch.cuit_librador "
+        "WHERE ch.cliente_id=? AND ch.deposito_fecha IS NOT NULL "
+        "AND substr(ch.deposito_fecha,1,7)=? ORDER BY ch.deposito_fecha", (cid, mes)))
+
+    # ── la posición de IVA del mes, que sale de las FACTURAS ─────────────────
+    serie = _cadena_iva(con, cid)
+    iva = next((x for x in serie if x["periodo"] == mes), None)
+
+    movs = filas(con.execute(
+        "SELECT m.*, c.banco, "
+        "  (SELECT p.numero FROM pagos p WHERE p.id=m.pago_id) AS recibo, "
+        "  (SELECT v.impuesto || ' ' || v.periodo FROM vencimientos v "
+        "   WHERE v.movimiento_id=m.id) AS impuesto, "
+        "  (SELECT pf.numero FROM pagos_fiscales pf WHERE pf.movimiento_id=m.id) AS vep, "
+        "  (SELECT ch.numero FROM conciliaciones co JOIN cheques ch ON ch.id=co.cheque_id "
+        "   WHERE co.movimiento_id=m.id) AS cheque "
+        "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "WHERE m.cliente_id=? AND substr(m.fecha,1,7)=? ORDER BY m.fecha, m.id", (cid, mes)))
+    con.close()
+    for x in movs:
+        partes = []
+        if x["recibo"]:
+            partes.append(f"recibo {x['recibo']}")
+        if x["impuesto"]:
+            partes.append(x["impuesto"] + (f" · VEP {x['vep']}" if x["vep"] else ""))
+        if x["cheque"]:
+            partes.append(f"cheque Nº{x['cheque']}")
+        x["explica"] = " · ".join(partes)
+    return jsonify({
+        "mes": mes, "meses": meses, "bloques": bloques, "totales": tot,
+        "cheques_pagados": pagados, "cheques_cobrados": cobrados,
+        "depositos": depositos, "iva": iva, "movimientos": movs,
+        "sin_clasificar": len([m for m in movs if not (m["rango"] or "")]),
+        "sin_explicar": len([m for m in movs if not m["explica"]]),
+    })
 
 
 @app.get("/api/c/bancos/resumen-mensual")

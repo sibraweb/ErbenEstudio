@@ -253,6 +253,25 @@ CREATE INDEX ix_chequeras ON chequeras(cliente_id, activa);
 CREATE INDEX ix_chq_cliente ON cheques(cliente_id, estado);
 CREATE INDEX ix_chq_venc ON cheques(cliente_id, fecha_pago);
 
+-- Las reglas que clasifican solas. El extracto dice «DB.AUT.SERV.AGUA» y nadie
+-- lo mira dos veces; clasificado dice «Servicios · Agua», y recién ahí el mes
+-- se puede leer. La regla se aplica PARA ATRÁS: si solo valiera de acá en
+-- adelante, nadie la cargaría.
+CREATE TABLE reglas_clasificacion (
+    id         INTEGER PRIMARY KEY,
+    cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+    patron     TEXT NOT NULL,              -- se busca dentro del concepto
+    rango      TEXT NOT NULL,              -- Ingreso | Egreso | Impuesto | …
+    subrango   TEXT NOT NULL,              -- el concepto, abierto
+    -- ⚠ Prioridad MENOR gana: las reglas se aplican de mayor a menor para que
+    -- la más específica escriba última. Al revés, la general le pisa el
+    -- resultado a la que la persona escribió para ese caso puntual.
+    prioridad  INTEGER NOT NULL DEFAULT 100,
+    activa     INTEGER NOT NULL DEFAULT 1,
+    nota       TEXT
+);
+CREATE INDEX ix_reglas ON reglas_clasificacion(cliente_id, prioridad);
+
 -- ══ 7. PAGOS Y COBRANZAS ════════════════════════════════════════════════════
 -- Un comprobante tiene UNA dirección (o cancela compras o cancela ventas):
 -- netear esconde que alguien te debe. Misma regla que el ERP.

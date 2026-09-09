@@ -1293,83 +1293,209 @@ async function tScp(){
          Nada sin contraparte. Cada movimiento, factura y cheque tiene su documento.</div></div>`}`);
 }
 
-/* ══ BANCOS ══ */
+/* ══ BANCOS ══ — el módulo del ERP: el mes como se mira, y los movimientos.
+   Sin la columna «Empresa» (acá hay un solo cliente) y sin obra. */
+let bTab = 'mes', bMes = null;
+
 async function vBancos(){
   cargando('Bancos');
-  const [cs, ms, rm] = await Promise.all([
-    api('/api/c/cuentas'), api('/api/c/movimientos'),
-    api('/api/c/bancos/resumen-mensual').catch(() => ({meses:[]})),
-  ]);
-  CTAS = cs;
-  pintar(`
-    <h2>Bancos</h2><div class="sub">El extracto anotado: cada movimiento se va completando con el CUIT,
+  const tabs = [['mes','Resumen del mes'],['movs','Movimientos'],
+                ['cuentas','Cuentas y saldos'],['reglas','Reglas de clasificación']];
+  pintar(`<h2>Bancos</h2>
+    <div class="sub">El extracto anotado: cada movimiento se va completando con el CUIT,
       el recibo y la factura cuando se usa para pagar o cuando concilia.</div>
-    <div class="grid">${cs.map(c => `<div class="card"><div class="k">${esc(c.banco)}</div>
-      <div class="v sm">${plata(c.saldo_calculado)}</div>
-      <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.${
-        c.codigo_bcra ? ` · BCRA ${esc(c.codigo_bcra)}` : ' · <span class="neg">sin maestro</span>'}</div></div>`).join('')
-      || '<div class="card"><div class="k">Sin cuentas</div><div class="mini" style="margin-top:6px">Cargá una abajo.</div></div>'}</div>
-    ${rm.meses.length ? `<div class="panel" style="margin-top:16px">
-      <div class="panel-h"><b>El mes a mes</b>
-        <span class="mini">acredita ${plata(rm.acredita)} · debita ${plata(rm.debita)}${
-          rm.sin_explicar ? ` · <span class="neg">${plata(rm.sin_explicar)} sin explicar</span>` : ''}</span></div>
-      <div class="panel-b"><div class="mini" style="margin-bottom:8px">Lo que importa no es el
-        total del mes: es <b>cuánto de ese total tiene comprobante detrás</b>. Un mes con mucho
-        depósito y la mitad sin explicar no es un buen mes, es medio mes sin contabilizar.
-        Hacé clic en un mes para ver el detalle.</div></div>
-      ${tabla(['Mes','Banco','Depósitos de cheques','Acredita','Debita','Neto','Movs.','Sin explicar'],
-        rm.meses.map(m => [`<b>${esc(m.mes)}</b>`, esc(m.banco),
-          m.cheques_depositados ? `${m.cheques_depositados} · ${plata(m.cheques_depositados_importe)}` : '—',
-          {n:`<span class="pos">${plata(m.acredita)}</span>`},
-          {n:`<span class="neg">${plata(m.debita)}</span>`},
-          {n:plata(m.neto)}, m.movimientos,
-          {n: m.sin_explicar > 0.01 ? `<span class="neg">${plata(m.sin_explicar)}</span>`
-             : '<span class="badge b-ok">todo explicado</span>'}]),
-        {onclick: i => `verMesBanco('${rm.meses[i].mes}')`})}
-    </div>` : ''}
-    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Cuenta nueva</b>
-      <button class="g xs" onclick="toggle('#b-cta')">Mostrar</button></div>
-      <div class="panel-b hide" id="b-cta">
-        <div class="mini" style="margin-bottom:8px">El banco se elige del <b>maestro del BCRA</b>,
-          no se escribe: así no conviven «BANCO DE FORMOSA», «Bco Formosa» y «formosa» como
-          tres bancos distintos. Y el CBU se valida — trae su propio dígito verificador.</div>
-        <div class="f">
-        <div class="full"><label>Banco</label>
-          <input id="nb-banco" list="dl-bancos" placeholder="escribí: formosa, galicia, nación…"
-            oninput="buscarBanco()" autocomplete="off">
-          <datalist id="dl-bancos"></datalist>
-          <div class="mini" id="nb-eco" style="margin-top:4px"></div></div>
-        <div><label>Tipo</label><select id="nb-tipo"><option value="CC">Cta. corriente</option>
-          <option value="CA">Caja de ahorro</option></select></div>
-        <div><label>Número</label><input id="nb-num"></div>
-        <div><label>CBU</label><input id="nb-cbu" placeholder="22 dígitos"></div>
-        <div><label>Titular</label><input id="nb-titular" placeholder="a nombre de quién está"></div>
-        <div style="display:flex;align-items:flex-end"><button onclick="altaCuenta()">Crear</button></div>
-      </div></div>
+    <div class="tabs">${tabs.map(([k,t]) =>
+      `<button class="${bTab===k?'on':''}" onclick="bTab='${k}';vBancos()">${t}</button>`).join('')}</div>
+    <div id="b-panel"><div class="vacio">Cargando…</div></div>`);
+  ({mes:bResumenMes, movs:bMovs, cuentas:bCuentas, reglas:bReglas}[bTab])();
+}
+const panelB = h => { const c = $('#b-panel'); if (c) c.innerHTML = h; };
+
+/* ── EL MES, agrupado por concepto ── */
+async function bResumenMes(){
+  const rm = await api('/api/c/bancos/resumen-mensual').catch(() => ({meses:[]}));
+  if (!bMes) bMes = (rm.meses[0] || {}).mes || new Date().toISOString().slice(0,7);
+  const d = await api(`/api/c/bancos/mes-detalle/${bMes}`).catch(e => ({error:e.message}));
+  if (d.error) return panelB(`<div class="vacio">${esc(d.error)}</div>`);
+  const t = d.totales;
+  const bloque = (titulo, filas, color) => filas.length ? `
+    <div><div class="mini" style="margin-bottom:6px;color:${color}"><b>${titulo}</b></div>
+      ${tabla(['Concepto','Mov.','Importe'], filas.map(x =>
+        [esc(x.concepto), x.n, {n:plata(x.importe)}]))}</div>` : '';
+  panelB(`
+    <div class="panel"><div class="panel-h"><b>El mes</b>
+      <select style="max-width:160px" onchange="bMes=this.value;bResumenMes()">
+        ${d.meses.map(m => `<option${m===bMes?' selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="panel-b">
+        <div class="grid">
+          <div class="card"><div class="k">Ingresos</div><div class="v sm pos">${plata(t.ingresos)}</div>
+            <div class="mini">lo que entró</div></div>
+          <div class="card"><div class="k">Egresos</div><div class="v sm neg">${plata(t.egresos)}</div>
+            <div class="mini">lo que salió</div></div>
+          <div class="card"><div class="k">Impuestos</div><div class="v sm">${plata(t.impuestos)}</div>
+            <div class="mini">neto de devoluciones</div></div>
+          <div class="card"><div class="k">Gastos del banco</div><div class="v sm">${plata(t.bancarios)}</div></div>
+          <div class="card"><div class="k">Neto del mes</div>
+            <div class="v sm ${t.neto<0?'neg':'pos'}">${plata(t.neto)}</div></div>
+        </div>
+        ${d.sin_clasificar ? `<div class="aviso" style="margin-top:12px;border-left-color:var(--warn)">
+          <b>${d.sin_clasificar} movimiento(s) sin clasificar</b> caen en «(sin clasificar)».
+          Una regla en la pestaña <b>Reglas</b> los acomoda a todos de una, y también para atrás.</div>` : ''}
+        <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-top:14px">
+          ${bloque('Ingresos', d.bloques.ingresos, '#7FB2DA')}
+          ${bloque('Egresos', d.bloques.egresos, '#E28873')}
+          ${bloque('Impuestos del mes', d.bloques.impuestos, 'var(--warn)')}
+          ${bloque('Gastos bancarios', d.bloques.bancarios, 'var(--mut)')}
+        </div>
+        <div class="mini" style="margin-top:10px">Cada concepto se agrupa <b>también por signo</b>:
+          un cargo y su devolución no se funden en una cifra sola, se ven las dos líneas y el
+          bloque queda neteado — que es como se lee una nota de crédito de impuesto.</div>
+      </div>
     </div>
-    <div class="panel"><div class="panel-h"><b>Movimiento manual</b>
-      <button class="g xs" onclick="toggle('#b-mov')">Mostrar</button></div>
+
+    <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
+      ${d.cheques_pagados.length ? `<div class="panel"><div class="panel-h">
+        <b>Cheques PAGADOS del mes</b><span class="mini">${plata(d.cheques_pagados.reduce((s,c)=>s+c.importe,0))}</span></div>
+        ${tabla(['Fecha','Nº','A quién','Monto'], d.cheques_pagados.map(c =>
+          [fecha(c.fecha), esc(c.numero), esc(c.quien||'—'), {n:plata(c.importe)}]))}</div>` : ''}
+      ${d.cheques_cobrados.length ? `<div class="panel"><div class="panel-h">
+        <b>Cheques COBRADOS del mes</b><span class="mini">${plata(d.cheques_cobrados.reduce((s,c)=>s+c.importe,0))}</span></div>
+        ${tabla(['Fecha','Nº','De quién','Monto'], d.cheques_cobrados.map(c =>
+          [fecha(c.fecha), esc(c.numero), esc(c.quien||'—'), {n:plata(c.importe)}]))}</div>` : ''}
+    </div>
+
+    ${d.depositos.length ? `<div class="panel"><div class="panel-h">
+      <b>Depósitos del mes</b>
+      <span class="mini">${d.depositos.length} · ${plata(d.depositos.reduce((s,c)=>s+c.importe,0))}</span></div>
+      ${tabla(['Fecha','Banco','De quién','Nº cheque','Monto'], d.depositos.map(c =>
+        [fecha(c.fecha), esc(c.banco||'—'), esc(c.quien||'—'), esc(c.numero), {n:plata(c.importe)}]))}
+    </div>` : ''}
+
+    ${d.iva ? `<div class="panel"><div class="panel-h"><b>Posición de IVA del mes</b>
+      <span class="mini">sale de las FACTURAS, no del banco</span></div>
+      ${tabla(['Concepto','Importe'], [
+        ['Débito fiscal (ventas)', {n:plata(d.iva.debito)}],
+        ['Crédito fiscal (compras)', {n:plata(d.iva.credito)}],
+        ['Percepciones', {n:plata(d.iva.percepciones)}],
+        ['Posición del mes', {n:`<b class="${d.iva.posicion>0?'neg':'pos'}">${plata(d.iva.posicion)}</b>`}],
+        ['Saldo a favor anterior', {n:plata(d.iva.saldo_favor_anterior)}],
+        [d.iva.a_pagar ? '<b>A PAGAR</b>' : 'Queda a favor',
+         {n:`<b class="${d.iva.a_pagar?'neg':'pos'}">${plata(d.iva.a_pagar || d.iva.saldo_favor_final)}</b>`}]])}
+      <div class="panel-b"><div class="mini">El banco no sabe de IVA: mezclarlos daría un número
+        que no es ninguno de los dos.</div></div>
+    </div>` : ''}`);
+}
+
+/* ── LOS MOVIMIENTOS, con lo que los explica y su clasificación ── */
+async function bMovs(){
+  const [ms, cs] = await Promise.all([api('/api/c/movimientos'), api('/api/c/cuentas')]);
+  CTAS = cs;
+  panelB(`
+    <div class="panel"><div class="panel-h"><b>${ms.length} movimiento(s)</b>
+      <div class="row-act">
+        <button class="g xs" onclick="toggle('#b-mov')">+ Movimiento a mano</button>
+        <button class="g xs" onclick="reclasificar()">Volver a clasificar todo</button></div></div>
       <div class="panel-b hide" id="b-mov"><div class="f">
         <div><label>Cuenta</label><select id="nm-cta">${optCta()}</select></div>
         <div><label>Fecha</label><input type="date" id="nm-fecha" value="${hoy()}"></div>
-        <div class="full"><label>Descripción</label><input id="nm-desc" placeholder="TRANSFERENCIA CUIT 30-12345678-9"></div>
-        <div><label>Importe (− si debita)</label><input id="nm-imp" type="number" step="0.01"></div>
-        <div><label>Referencia</label><input id="nm-ref"></div>
-        <div style="display:flex;align-items:flex-end"><button onclick="altaMov()">Agregar</button></div>
+        <div><label>Importe (− si sale)</label><input id="nm-imp" type="number" step="0.01"></div>
+        <div class="full"><label>Concepto</label><input id="nm-desc"></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaMovimiento()">Agregar</button></div>
       </div></div>
-    </div>
-    <div class="panel"><div class="panel-h"><b>${ms.length} movimiento(s)</b>
-      <button class="g xs" onclick="location.hash='#tesoreria';setTimeout(()=>{tTab='conc';vTesoreria()},400)">Ir a conciliación</button></div>
-      ${ms.length ? tabla(['Fecha','Banco','Descripción','CUIT','Importe','Estado'],
+      ${ms.length ? tabla(['Fecha','Banco','Concepto','Clasificación','CUIT','Importe','Qué lo explica','Estado'],
         ms.map(m => [fecha(m.fecha), esc(m.banco),
-          `${esc(m.descripcion||'—')}${m.pago_id ? `<div class="cadena">↳ <i>recibo #${m.pago_id}</i></div>` : ''}`,
-          m.cuit_contraparte ? `<span class="mini">${esc(m.cuit_contraparte)}</span>` : '—',
+          esc((m.descripcion||'sin descripción').slice(0,44)),
+          m.rango ? `${esc(m.rango)}<div class="mini">${esc(m.subrango||'')}</div>`
+            : `<button class="g xs" onclick="event.stopPropagation();clasificarMov(${m.id},'${esc((m.descripcion||'').slice(0,30))}')">clasificar</button>`,
+          esc(m.cuit_contraparte||'—'),
           {n:`<span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span>`},
-          m.conciliado ? `<span class="badge b-ok" title="${esc(m.conciliado_motivo||'')}">conciliado</span>`
-            : '<span class="badge b-warn">pendiente</span>']))
-        : '<div class="vacio">Sin movimientos. Se cargan a mano o los deja el job del banco.</div>'}
+          m.recibo ? esc('recibo '+m.recibo) : '<span class="mini">—</span>',
+          m.conciliado ? '<span class="badge b-ok">conciliado</span>' : '<span class="badge b-warn">sin registrar</span>']),
+        {onclick: i => `verCadena('banco',${ms[i].id})`})
+        : '<div class="vacio">Sin movimientos. Los carga el job del banco o se agregan a mano.</div>'}
     </div>`);
 }
+
+async function clasificarMov(mid, concepto){
+  const d = await api('/api/c/clasificacion/reglas');
+  const r = await modal('Clasificar el movimiento',
+    `<b>${esc(concepto)}</b><br><br>Poné en qué bloque cae y con qué nombre. Si además lo hacés
+     regla, el sistema clasifica solo a todos los que digan lo mismo — <b>también los que ya
+     entraron</b>.`,
+    [
+      {id:'md-rango', label:'Bloque',
+       html:`<select id="md-rango">${d.rangos.map(x => `<option>${esc(x)}</option>`).join('')}</select>`},
+      {id:'md-sub', label:'Concepto (el nombre que querés ver)',
+       html:'<input id="md-sub" placeholder="Servicios · Agua">'},
+      {id:'md-patron', label:'Hacerlo regla: qué texto lo identifica (vacío = solo este)',
+       html:`<input id="md-patron" placeholder="ej: SERV.AGUA">`},
+    ], 'Guardar');
+  if (!r) return;
+  try{
+    if ((r['md-patron']||'').trim()){
+      const res = await post('/api/c/clasificacion/reglas',
+        {patron:r['md-patron'], rango:r['md-rango'], subrango:r['md-sub']});
+      toast(`Regla creada — clasificó ${res.clasificados} movimiento(s)`);
+    } else {
+      await post(`/api/c/movimientos/${mid}/clasificar`, {rango:r['md-rango'], subrango:r['md-sub']});
+      toast('Clasificado');
+    }
+    vBancos();
+  }catch(e){ toast(e.message, true); }
+}
+async function reclasificar(){
+  try{ const r = await post('/api/c/clasificacion/aplicar', {});
+    toast(`${r.clasificados} movimiento(s) reclasificados`); vBancos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ── LAS REGLAS ── */
+async function bReglas(){
+  const d = await api('/api/c/clasificacion/reglas');
+  panelB(`
+    <div class="aviso">El extracto dice <i>«DB.AUT.SERV.AGUA»</i> y nadie lo mira dos veces.
+      Clasificado dice <b>«Servicios · Agua»</b>, y recién ahí el mes se puede leer.
+      <br>Una regla <b>se aplica para atrás</b>: el trabajo de clasificar una vez vale para todo
+      lo que ya entró y para todo lo que venga. Si solo valiera de acá en adelante, nadie la
+      cargaría.</div>
+    <div class="grid">
+      <div class="card"><div class="k">Reglas</div><div class="v">${d.reglas.length}</div></div>
+      <div class="card"><div class="k">Movimientos sin clasificar</div>
+        <div class="v ${d.sin_clasificar?'neg':'pos'}">${d.sin_clasificar}</div></div>
+    </div>
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Las reglas</b>
+      <button class="g xs" onclick="toggle('#b-regla')">+ Nueva</button></div>
+      <div class="panel-b hide" id="b-regla"><div class="f">
+        <div><label>Si el concepto contiene…</label><input id="nr-patron" placeholder="SERV.AGUA"></div>
+        <div><label>Bloque</label><select id="nr-rango">${
+          d.rangos.map(x => `<option>${esc(x)}</option>`).join('')}</select></div>
+        <div><label>Nombre a mostrar</label><input id="nr-sub" placeholder="Servicios · Agua"></div>
+        <div><label>Prioridad</label><input id="nr-prio" type="number" value="100">
+          <div class="mini">menor gana</div></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaRegla()">Crear y aplicar</button></div>
+      </div></div>
+      ${d.reglas.length ? tabla(['Contiene','Bloque','Nombre','Prioridad','Alcanza',''],
+        d.reglas.map(g => [`<code>${esc(g.patron)}</code>`, esc(g.rango), esc(g.subrango),
+          g.prioridad, `${g.alcanza} mov.`,
+          `<button class="g xs" onclick="borrarRegla(${g.id})">Borrar</button>`]))
+        : '<div class="vacio">Sin reglas. Cada movimiento se clasifica a mano.</div>'}
+    </div>`);
+}
+async function altaRegla(){
+  try{ const r = await post('/api/c/clasificacion/reglas', {patron:val('nr-patron'),
+      rango:val('nr-rango'), subrango:val('nr-sub'), prioridad:num('nr-prio')});
+    toast(`Regla creada — clasificó ${r.clasificados} movimiento(s)`); bReglas();
+  }catch(e){ toast(e.message, true); }
+}
+async function borrarRegla(id){
+  const r = await modal('Borrar la regla',
+    'Lo que ya clasificó <b>queda como está</b>: la regla es el atajo, no el dueño del dato. '
+    + 'Borrarla y desclasificar todo castigaría al que corrige.', [], 'Borrar');
+  if (!r) return;
+  try{ await api(`/api/c/clasificacion/reglas/${id}`, {method:'DELETE'});
+    toast('Borrada'); bReglas(); }catch(e){ toast(e.message, true); }
+}
+
 /* El detalle de un mes, con lo que explica cada movimiento en su propia
    columna: el recibo, el impuesto y su VEP, o el cheque. Lo que queda en
    blanco es el hueco. */
@@ -1411,6 +1537,48 @@ async function buscarBanco(){
     : BANCOS_M.length ? `${BANCOS_M.length} coinciden — elegí uno de la lista`
     : '<span class="neg">ninguno coincide: revisá cómo se escribe</span>';
 }
+/* ── CUENTAS Y SALDOS ──
+   El banco se elige del MAESTRO DEL BCRA, no se escribe: así no conviven
+   «BANCO DE FORMOSA», «Bco Formosa» y «formosa» como tres bancos distintos. */
+async function bCuentas(){
+  const [cs, ms] = await Promise.all([api('/api/c/cuentas'), api('/api/c/movimientos')]);
+  CTAS = cs;
+  panelB(`
+    <div class="grid">${cs.map(c => `<div class="card"><div class="k">${esc(c.banco)}</div>
+      <div class="v sm">${plata(c.saldo_calculado)}</div>
+      <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.${
+        c.codigo_bcra ? ` · BCRA ${esc(c.codigo_bcra)}` : ' · <span class="neg">sin maestro</span>'}</div>
+      ${c.cbu ? `<div class="mini">CBU ${esc(c.cbu)}</div>` : '<div class="mini neg">sin CBU</div>'}
+      </div>`).join('')
+      || '<div class="card"><div class="k">Sin cuentas</div><div class="mini" style="margin-top:6px">Cargá una abajo.</div></div>'}</div>
+    <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Cuenta nueva</b>
+      <button class="g xs" onclick="toggle('#b-cta')">Mostrar</button></div>
+      <div class="panel-b hide" id="b-cta">
+        <div class="mini" style="margin-bottom:8px">El banco se elige del <b>maestro del BCRA</b>,
+          no se escribe. Y el CBU se valida — trae su propio dígito verificador.</div>
+        <div class="f">
+        <div class="full"><label>Banco</label>
+          <input id="nb-banco" list="dl-bancos" placeholder="escribí: formosa, galicia, nación…"
+            oninput="buscarBanco()" autocomplete="off">
+          <datalist id="dl-bancos"></datalist>
+          <div class="mini" id="nb-eco" style="margin-top:4px"></div></div>
+        <div><label>Tipo</label><select id="nb-tipo"><option value="CC">Cta. corriente</option>
+          <option value="CA">Caja de ahorro</option></select></div>
+        <div><label>Número</label><input id="nb-num"></div>
+        <div><label>CBU</label><input id="nb-cbu" placeholder="22 dígitos"></div>
+        <div><label>Titular</label><input id="nb-titular" placeholder="a nombre de quién está"></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="altaCuenta()">Crear</button></div>
+      </div></div>
+    </div>`);
+}
+
+async function altaMovimiento(){
+  try{ await post('/api/c/movimientos', {cuenta_id:+val('nm-cta'), fecha:val('nm-fecha'),
+    importe:num('nm-imp'), descripcion:val('nm-desc')});
+    toast('Movimiento agregado'); bMovs();
+  }catch(e){ toast(e.message, true); }
+}
+
 async function altaCuenta(){
   const uno = BANCOS_M.length === 1 ? BANCOS_M[0].codigo : null;
   try{ await post('/api/c/cuentas', {banco: val('nb-banco'), tipo: val('nb-tipo'),
