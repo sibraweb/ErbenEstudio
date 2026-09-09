@@ -712,41 +712,92 @@ async function tVen(){
       </div>`; }).join('') || '<div class="panel"><div class="vacio">Nada en el calendario.</div></div>'}`);
 }
 
-let docFlujo = '', docClase = '';
+/* ══ TABLERO · DOCUMENTOS ══ — el del ERP, separado por clase.
+   Sin la sección de documentos de obra: acá el circuito arranca en la factura.
+
+   Las secciones van EN EL ORDEN DE LA ESCALERA, y el título de cada una dice
+   con qué se aplica. Eso es lo que convierte una lista larga en algo que se
+   lee: no es «todo junto ordenado por fecha», es «esto se salda con aquello». */
+let docFlujo = '', docEnt = '', docSoloFalta = false;
+
+const SECCIONES_DOC = [
+  {tit: 'FACTURAS / NC / ND', con: 'se aplican con PAGO',
+   filtro: x => x.clase === 'factura'},
+  {tit: 'PAGOS / RECIBOS', con: 'se aplican con efectivo, banco y cheques',
+   filtro: x => x.clase === 'pago'},
+  {tit: 'CHEQUES', con: 'se aplican con RECIBOS',
+   filtro: x => x.clase === 'cheque'},
+  {tit: 'BANCO', con: 'se aplica con RECIBOS — transferencias, depósitos, pago de cheques',
+   filtro: x => x.clase === 'banco'},
+  {tit: 'IMPUESTOS', con: 'se aplican con el VEP y el débito del banco',
+   filtro: x => x.clase === 'impuesto'},
+];
+
+/* Qué falta, y NO es lo mismo según el documento. A una factura de compra le
+   falta el pago, a la de venta el cobro.
+   ⚠ Y una NOTA DE CRÉDITO no «falta pagar»: es plata que se DEJA de deber.
+   Decirle «falta pagar» invierte el signo del hecho. */
+function faltaDe(x){
+  if (x.clase !== 'factura') return 'sin aplicar a facturas';
+  if (['NC','ND'].includes(x.tipo)) return 'sin aplicar';
+  return x.mov === 'compra' ? 'falta pagar' : 'falta cobrar';
+}
+
 async function tDoc(){
   const ds = await api('/api/c/tesoreria/documentos');
-  const vis = ds.filter(d => (!docFlujo || d.flujo === docFlujo) && (!docClase || d.clase === docClase));
-  const clases = ['factura','pago','cheque','banco','impuesto'];
+  const q = normEnt(docEnt);
+  const vis = ds.filter(d =>
+    (!docFlujo || d.flujo === docFlujo)
+    && (!q || normEnt(d.entidad || '').includes(q) || normEnt(d.detalle || '').includes(q))
+    && (!docSoloFalta || (d.saldo != null ? Math.abs(d.saldo) > 0.01 : d.estado === 'sin registrar')));
   panelT(`
-    <div class="aviso"><b>La escalera:</b> FACTURA se aplica con PAGO · PAGO con efectivo, banco o cheques ·
-      CHEQUE y BANCO con RECIBOS. Cada fila muestra su cadena: cuántos eslabones tiene armados.
-      <br><b>Hacé clic en cualquier fila</b> y sale la cadena entera, de ida y de vuelta: de la
-      factura al recibo, al banco o al cheque; y del movimiento del banco al recibo, a las
-      facturas que cancela y al proveedor — o al impuesto que pagó y su VEP.</div>
-    <div class="panel"><div class="panel-h">
-      <div class="row-act">
-        <button class="${!docClase?'':'g'} xs" onclick="docClase='';tDoc()">Todos</button>
-        ${clases.map(c => `<button class="${docClase===c?'':'g'} xs" onclick="docClase='${c}';tDoc()">${c}</button>`).join('')}
-      </div>
-      <div class="row-act">
-        <button class="${!docFlujo?'':'g'} xs" onclick="docFlujo='';tDoc()">Ingresos y egresos</button>
-        <button class="${docFlujo==='ingreso'?'':'g'} xs" onclick="docFlujo='ingreso';tDoc()">Ingresos</button>
-        <button class="${docFlujo==='egreso'?'':'g'} xs" onclick="docFlujo='egreso';tDoc()">Egresos</button>
-      </div></div>
-      ${vis.length ? tabla(['Fecha','Clase','Documento','Entidad','Estado','Neto','IVA','Total','Saldo'],
-        vis.map(d => [fecha(d.fecha), `<span class="badge b-mut">${esc(d.clase)}</span>`,
-          `${esc(d.detalle)}${d.cadena.length ? `<div class="cadena">↳ ${d.cadena.map(c => `<i>${esc(c)}</i>`).join(' · ')}</div>`
-            : `<div class="cadena">↳ se aplica con ${esc(d.se_aplica_con)}</div>`}`,
-          esc(d.entidad), badgeEstado(d.estado),
-          // Un PAGO no tiene neto ni IVA: es por el total. Poner un 0 ahí sería
-          // decir que su IVA es cero, y lo que pasa es que no aplica.
+    <div class="aviso"><b>La escalera:</b> FACTURA se aplica con PAGO · PAGO con efectivo, banco
+      o cheques · CHEQUE y BANCO con RECIBOS · IMPUESTO con su VEP y el débito.
+      Cada sección dice con qué se salda, y <b>la columna «Falta»</b> dice qué le falta a esa
+      fila puntual — que no es lo mismo para una compra que para una venta.
+      <br><b>Hacé clic en cualquier fila</b> y sale la cadena entera, de ida y de vuelta.</div>
+
+    <div class="panel"><div class="panel-b"><div class="f">
+      <div><label>Entidad (escribí para filtrar)</label>
+        <input id="doc-ent" value="${esc(docEnt)}" placeholder="todas"
+          oninput="docEnt=this.value;clearTimeout(window._td);window._td=setTimeout(tDoc,350)"></div>
+      <div><label>Ingresos / egresos</label>
+        <select onchange="docFlujo=this.value;tDoc()">
+          <option value=""${!docFlujo?' selected':''}>Todos</option>
+          <option value="ingreso"${docFlujo==='ingreso'?' selected':''}>Ingresos</option>
+          <option value="egreso"${docFlujo==='egreso'?' selected':''}>Egresos</option></select></div>
+      <div style="display:flex;align-items:flex-end">
+        <label class="chk"><input type="checkbox" ${docSoloFalta?'checked':''}
+          onchange="docSoloFalta=this.checked;tDoc()"> Solo lo que falta</label></div>
+      <div style="display:flex;align-items:flex-end" class="mini">
+        ${vis.length} de ${ds.length} documento(s)</div>
+    </div></div></div>
+
+    ${SECCIONES_DOC.map(s => {
+      const fs = vis.filter(s.filtro);
+      if (!fs.length) return '';
+      const falta = fs.reduce((a,d) => a + (d.saldo != null ? Math.abs(d.saldo) : 0), 0);
+      return `<div class="panel"><div class="panel-h">
+        <b>${esc(s.tit)}</b>
+        <span class="mini">${esc(s.con)} · ${fs.length} doc(s)${
+          falta > 0.01 ? ` · <b class="neg">${plata(falta)} sin aplicar</b>` : ''}</span></div>
+      ${tabla(['Fecha','Documento','Entidad / detalle','Neto','IVA','Total','A aplicar','Estado','Cadena'],
+        fs.map(d => [fecha(d.fecha),
+          `<b>${esc(d.detalle)}</b>`,
+          esc(d.entidad || '—'),
           {n: d.neto == null ? '—' : plata(d.neto)},
           {n: d.iva == null ? '—' : plata(d.iva)},
           {n:`<span class="${d.flujo==='egreso'?'neg':'pos'}">${plata(d.total)}</span>`},
-          {n: d.saldo == null ? '—' : plata(d.saldo)}]),
-        {onclick: i => `verCadena('${vis[i].clase}',${vis[i].id})`})
-        : '<div class="vacio">Sin documentos con ese filtro.</div>'}
-    </div>`);
+          {n: d.saldo == null || Math.abs(d.saldo) < 0.01
+             ? '<span class="mini">—</span>'
+             : `<span class="neg">${plata(d.saldo)}</span><div class="mini">${esc(faltaDe(d))}</div>`},
+          badgeEstado(d.estado),
+          d.cadena.length ? `<span class="mini">${d.cadena.map(c => esc(c)).join(' · ')}</span>`
+            : `<span class="mini">se aplica con ${esc(d.se_aplica_con)}</span>`]),
+        {onclick: i => `verCadena('${fs[i].clase}',${fs[i].id})`,
+         fila: i => fs[i].anulado ? ' style="opacity:.45"' : ''})}
+      </div>`;
+    }).join('') || '<div class="panel"><div class="vacio">Sin documentos con ese filtro.</div></div>'}`);
 }
 
 /* ── LA CADENA ENTERA, DE IDA Y DE VUELTA ──

@@ -4357,6 +4357,11 @@ def api_documentos():
         saldo = round(f["total"] - f["aplicado"], 2)
         docs.append({
             "clase": "factura", "id": f["id"], "fecha": f["fecha"],
+            # El tablero del ERP agrupa y decide QUÉ FALTA según el tipo: a una
+            # factura de compra le falta el pago, a la de venta el cobro, y a
+            # una NC no le falta nada de eso — es plata que se DEJA de deber.
+            "tipo": f["tipo"], "letra": f["letra"], "mov": f["mov"],
+            "punto_venta": f["punto_venta"], "numero": f["numero"],
             "detalle": f"{f['mov'].capitalize()} {f['tipo']} {f['punto_venta'] or ''}-{f['numero'] or ''}",
             "entidad": f["razon_social"], "total": f["total"], "aplicado": f["aplicado"],
             # El criterio único de IVA (Juan, 26/08): TODO comprobante muestra
@@ -4383,7 +4388,10 @@ def api_documentos():
             "entidad": p["razon_social"], "total": p["total"], "aplicado": aplicado,
             "saldo": round(p["total"] - aplicado, 2),
             "flujo": "ingreso" if p["direccion"] == "cobro" else "egreso",
-            "estado": "a cuenta" if aplicado < p["total"] - 0.01 else "imputado",
+            "estado": "anulado" if p["anulado"] else (
+                "a cuenta" if aplicado < p["total"] - 0.01 else "imputado"),
+            "tipo": "Cobranza" if p["direccion"] == "cobro" else "Orden de pago",
+            "numero": p["numero"], "anulado": p["anulado"],
             "se_aplica_con": "efectivo / banco / cheques",
             "cadena": [f"{m['medio']} {plata_txt(m['importe'])}" for m in medios]})
 
@@ -4401,6 +4409,7 @@ def api_documentos():
             cadena.append(f"conciliado con el movimiento #{conc['movimiento_id']}")
         docs.append({
             "clase": "cheque", "id": ch["id"], "fecha": ch["fecha_pago"],
+            "tipo": f"Cheque {ch['origen']}", "numero": ch["numero"],
             "detalle": f"Cheque {ch['origen']} Nº{ch['numero']}",
             "entidad": ch["librador"] or "—", "total": ch["importe"],
             "aplicado": None, "saldo": None,
@@ -4421,6 +4430,7 @@ def api_documentos():
             cadena.append(mv["motivo"])
         docs.append({
             "clase": "banco", "id": mv["id"], "fecha": mv["fecha"],
+            "tipo": mv["rango"] or "Movimiento", "numero": None, "banco": mv["banco"],
             "detalle": f"{mv['banco']} · {mv['descripcion'] or 'sin descripción'}",
             "entidad": mv["cuit_contraparte"] or "—", "total": mv["importe"],
             "aplicado": None, "saldo": None,
@@ -4441,6 +4451,7 @@ def api_documentos():
             cadena.append(f"débito #{v['movimiento_id']}")
         docs.append({
             "clase": "impuesto", "id": v["id"], "fecha": v["fecha"],
+            "tipo": v["impuesto"], "numero": v["periodo"],
             "detalle": f"{v['impuesto']} {v['periodo']} · {v['fuente']}",
             "entidad": v["fuente"], "total": v["importe"] or 0,
             "aplicado": None, "saldo": None, "neto": None, "iva": None,
