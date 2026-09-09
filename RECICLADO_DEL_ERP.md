@@ -39,8 +39,8 @@ cargar el sistema con conceptos que nadie va a usar.
 | Tesorería: Impuestos con respaldo bancario y Sin contraparte | `14bc159` |
 | Cheques duplicados y los que nombra el banco | `0abe3de` |
 | ATP: base = neto, y las deducciones del portal | `1b69c09` |
-| Lo que cobra el banco: percepción de IVA y de IIBB, tipada | `0c3d821` |
-| El impuesto que el sistema liquidó, visible en Tesorería | `0c3d821` |
+| Lo que cobra el banco: percepción de IVA y de IIBB, tipada | `0a43f89` |
+| El impuesto que el sistema liquidó, visible en Tesorería | `0a43f89` |
 
 ## Lo que FALTA, en orden de lo que más cambia
 
