@@ -467,22 +467,24 @@ const cargando = t => pintar(`<h2>${t}</h2><div class="vacio">Cargando…</div>`
 /* ══════════ TESORERÍA ══════════
    Tablero · Cuenta corriente · Conciliación · Posición hoy · Vencimientos
    · Documentos. Todo cuelga de la empresa elegida arriba.               */
-let tTab = 'tab', tEnt = null, tabEnt = '';
+let tTab = 'cc', tEnt = null, tabEnt = '';
 async function vTesoreria(){
   cargando('Tesorería');
-  const tabs = [['tab','Tablero'],['cc','Cuenta corriente'],['conc','Conciliación'],
+  // El orden y los nombres son los de «Tesorería · la casa nueva» del ERP.
+  // ⚠ Tablero y Documentos son UNA sola pestaña, no dos: los huecos y los
+  // documentos son la misma pregunta mirada de cerca y de lejos, y separarlos
+  // obligaba a saltar entre pestañas para resolver una fila.
+  const tabs = [['cc','Cuenta corriente'],['tab','Tablero · Documentos'],
                 ['pos','Posición hoy'],['ven','Vencimientos'],
-                // Traídas de Tesorería del ERP: la deuda impositiva con su
-                // respaldo bancario, y el cierre del módulo.
                 ['imp','Impuestos'],['scp','Sin contraparte'],
-                ['doc','Documentos']];
+                ['conc','Conciliación']];
   pintar(`<h2>Tesorería</h2>
     <div class="sub">Todo lo de ${esc(CLI.razon_social)} — la empresa se cambia arriba.</div>
     <div class="tabs">${tabs.map(([k,t]) =>
       `<button class="${tTab===k?'on':''}" onclick="tTab='${k}';tEnt=null;vTesoreria()">${t}</button>`).join('')}</div>
     <div id="t-panel"><div class="vacio">Cargando…</div></div>`);
-  ({tab:tTablero, cc:tCC, conc:tConc, pos:tPos, ven:tVen,
-    imp:tImp, scp:tScp, doc:tDoc}[tTab])();
+  ({tab:tTableroDocs, cc:tCC, conc:tConc, pos:tPos, ven:tVen,
+    imp:tImp, scp:tScp, doc:tTableroDocs}[tTab] || tCC)();
 }
 
 /* ── EL TABLERO: los huecos, todos accionables desde acá ──
@@ -743,6 +745,17 @@ function faltaDe(x){
   return x.mov === 'compra' ? 'falta pagar' : 'falta cobrar';
 }
 
+/* Los HUECOS arriba y los DOCUMENTOS abajo, en la misma pantalla.
+   Son la misma pregunta mirada de cerca y de lejos: «qué falta» y «qué hay».
+   Separarlas obligaba a saltar de pestaña para resolver una fila. */
+async function tTableroDocs(){
+  await tTablero();
+  const antes = $('#t-panel').innerHTML;
+  await tDoc();
+  $('#t-panel').innerHTML = antes
+    + '<div style="height:8px"></div>' + $('#t-panel').innerHTML;
+}
+
 async function tDoc(){
   const ds = await api('/api/c/tesoreria/documentos');
   const q = normEnt(docEnt);
@@ -859,8 +872,8 @@ let fMov = 'venta', fTab = 'venta', fPer = null;
 
 async function vFacturas(){
   cargando('Facturas');
-  const tabs = [['venta','Ventas'],['compra','Compras'],['iva','IVA del período'],
-                ['pos','Posición de IVA']];
+  const tabs = [['venta','Ventas'],['compra','Compras'],['act','Actividades · IIBB'],
+                ['iva','IVA del período'],['pos','Posición de IVA']];
   pintar(`<h2>Facturas</h2>
     <div class="sub">Las ventas llevan actividad y alícuota de IIBB: de ahí sale la DJ.
       Y de las facturas sale la posición de IVA.</div>
@@ -868,6 +881,7 @@ async function vFacturas(){
       `<button class="${fTab===k?'on':''}" onclick="fTab='${k}';vFacturas()">${t}</button>`).join('')}</div>
     <div id="f-panel"><div class="vacio">Cargando…</div></div>`);
   if (fTab === 'venta' || fTab === 'compra'){ fMov = fTab; fLista(); }
+  else if (fTab === 'act') fActividades();
   else if (fTab === 'iva') fIVA();
   else fPosicion();
 }
@@ -930,6 +944,106 @@ async function fLista(){
           {n: f.saldo > 0.01 ? `<span class="neg">${plata(f.saldo)}</span>`
             : '<span class="badge b-ok">saldada</span>'}]))}
     </div>` : '<div class="panel"><div class="vacio">Sin comprobantes cargados.</div></div>'}`);
+}
+
+/* ── ACTIVIDADES · IIBB ──
+   La pestaña del módulo del ERP, y acá no es una comodidad: es la diferencia
+   entre una DJ bien y una mal. Con el primer cliente las 56 ventas quedaron
+   todas en la actividad principal al 3%, y el portal reparte esa misma base
+   en TRES actividades —una al 15%—. Son $133.884 en un solo mes.
+
+   Se agrupa POR CLIENTE porque es lo que hace el trabajo posible: 15 de esas
+   56 ventas son a la misma Municipalidad y explican $78 de los $91 millones.
+   Se decide una vez y se aplican las quince. De a una, nadie las clasifica. */
+let acPeriodo = '', acSoloSin = true, acSel = new Set();
+
+async function fActividades(){
+  const q = (acPeriodo ? '?periodo=' + encodeURIComponent(acPeriodo) : '')
+          + (acSoloSin ? (acPeriodo ? '&' : '?') + 'solo_sin=1' : '');
+  const d = await api('/api/c/facturas/sin-actividad' + q);
+  const opciones = ACT.map((a,i) =>
+    `<option value="${i}">${esc(a.codigo)} · ${esc((a.nombre||'').slice(0,44))} — ${a.alicuota}%${
+      a.principal ? ' (principal)' : ''}</option>`).join('');
+  panelF(`
+    <div class="aviso">Una venta mal clasificada <b>no se ve</b>: la DJ cierra igual y el
+      impuesto sale mal. Una actividad al 15% contada al 3% se paga de menos y después se
+      reclama.<br>Se agrupa por cliente porque es como se decide: <b>un cliente suele facturar
+      siempre lo mismo</b>, así que se resuelve de una vez para todas sus ventas.</div>
+
+    <div class="panel"><div class="panel-b"><div class="f">
+      <div><label>Período</label><input type="month" id="ac-per" value="${esc(acPeriodo)}"
+        onchange="acPeriodo=this.value;acSel.clear();fActividades()"></div>
+      <div style="display:flex;align-items:flex-end">
+        <label class="chk"><input type="checkbox" ${acSoloSin?'checked':''}
+          onchange="acSoloSin=this.checked;acSel.clear();fActividades()">
+          Solo las que faltan clasificar</label></div>
+      <div style="display:flex;align-items:flex-end" class="mini">
+        ${d.total} venta(s) · <b class="${d.sin_actividad?'neg':'pos'}">${d.sin_actividad} sin actividad</b>
+        · ${plata(d.neto_total)} de neto</div>
+    </div></div></div>
+
+    ${ACT.length ? `<div class="panel"><div class="panel-h"><b>Asignar a las tildadas</b>
+      <span class="mini" id="ac-cuenta">${acSel.size} tildada(s)</span></div>
+      <div class="panel-b"><div class="f">
+        <div class="full"><label>Actividad + alícuota</label>
+          <select id="ac-masiva"><option value="">— quitar la actividad —</option>${opciones}</select></div>
+        <div style="display:flex;align-items:flex-end"><button onclick="asignarMasiva()">Aplicar</button></div>
+      </div></div></div>`
+      : `<div class="aviso" style="border-left-color:var(--bad)"><b>No hay padrón de actividades
+         cargado.</b> Lo trae el job de ATP: sin eso no hay de dónde elegir.</div>`}
+
+    ${d.grupos.length ? d.grupos.map(g => `
+      <div class="panel"><div class="panel-h">
+        <b>${esc(g.entidad)}</b>
+        <span class="mini">${g.facturas.length} venta(s) · ${plata(g.neto)} de neto
+          <button class="g xs" style="margin-left:8px"
+            onclick="tildarGrupo(${JSON.stringify(g.facturas.map(f=>f.id)).replace(/"/g,'&quot;')})">
+            Tildar todas</button></span></div>
+      ${tabla(['','Fecha','Comprobante','Neto','Total','Actividad'],
+        g.facturas.map(f => [
+          `<input type="checkbox" style="width:auto" ${acSel.has(f.id)?'checked':''}
+             onchange="tildar(${f.id})">`,
+          fecha(f.fecha),
+          `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+          {n:plata(f.neto)}, {n:plata(f.total)},
+          f.iibb_codigo
+            ? `${esc(f.iibb_codigo)} · ${f.iibb_alicuota}%`
+            : '<span class="neg">sin actividad</span>']))}
+      </div>`).join('')
+      : '<div class="panel"><div class="vacio">Nada para clasificar con ese filtro.</div></div>'}`);
+}
+
+function tildar(id){
+  acSel.has(id) ? acSel.delete(id) : acSel.add(id);
+  const c = $('#ac-cuenta'); if (c) c.textContent = acSel.size + ' tildada(s)';
+}
+
+function tildarGrupo(ids){
+  const todas = ids.every(i => acSel.has(i));
+  ids.forEach(i => todas ? acSel.delete(i) : acSel.add(i));
+  fActividades();
+}
+
+async function asignarMasiva(){
+  if (!acSel.size) return toast('No tildaste ninguna', true);
+  const i = val('ac-masiva');
+  const a = i === '' ? null : ACT[+i];
+  const r = await modal(a ? 'Asignar la actividad' : 'Quitar la actividad',
+    a ? `Se les va a poner <b>${esc(a.codigo)} — ${esc(a.nombre||'')}</b> al <b>${a.alicuota}%</b>
+         a las <b>${acSel.size}</b> ventas tildadas.<br><br>
+         La alícuota es la que define cuánto se paga: revisá que sea la que corresponde a lo
+         que esas ventas facturan.`
+      : `Se les va a <b>quitar</b> la actividad a las ${acSel.size} ventas tildadas.<br><br>
+         Mientras estén sin actividad la DJ no cierra.`,
+    [], a ? 'Asignar' : 'Quitar');
+  if (!r) return;
+  try{
+    const res = await post('/api/c/facturas/actividad-masiva',
+      {facturas: [...acSel], codigo: a ? a.codigo : null, alicuota: a ? a.alicuota : null});
+    toast(`${res.asignadas} venta(s) actualizadas`
+      + (res.salteadas ? ` · ${res.salteadas} salteada(s)` : ''));
+    acSel.clear(); fActividades();
+  }catch(e){ toast(e.message, true); }
 }
 
 /* ── El libro de IVA de UN mes, para controlarlo contra el papel ── */

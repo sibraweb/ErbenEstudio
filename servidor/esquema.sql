@@ -160,6 +160,11 @@ CREATE TABLE movimientos_banco (
     saldo        REAL,
     referencia   TEXT,                         -- nro de operación del banco
     origen       TEXT NOT NULL DEFAULT 'manual',   -- extracto | job | manual
+    -- Cómo se lee este movimiento. El extracto dice «DB.AUT.SERV.AGUA» y nadie
+    -- lo mira dos veces; clasificado dice «Egreso · Servicios · Agua», y recién
+    -- ahí el mes se puede leer. Lo llenan las reglas (`reglas_clasificacion`).
+    rango        TEXT,                             -- Ingreso | Egreso | Impuesto | …
+    subrango     TEXT,                             -- el concepto
     cuit_contraparte TEXT,
     pago_id      INTEGER,
     conciliado   INTEGER NOT NULL DEFAULT 0,

@@ -4617,6 +4617,104 @@ def api_pago_imputar(pid):
     return jsonify({"ok": True, "imputado": hechas, "queda_a_cuenta": resto})
 
 
+@app.post("/api/c/facturas/actividad-masiva")
+def api_actividad_masiva():
+    """Asignar el par actividad+alícuota a MUCHAS facturas de una.
+
+    Es la acción de la pestaña «Actividades» del módulo del ERP, y acá no es
+    una comodidad: es la diferencia entre una DJ bien y una mal. Con el primer
+    cliente, las 56 ventas quedaron todas en la actividad principal al 3%, y el
+    portal reparte esa misma base en tres actividades —una al 15%—. Son
+    $133.884 en un solo mes. De a una, nadie las clasifica.
+
+    Body: {facturas:[ids], codigo, alicuota} · o {codigo:null} para quitarla.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    ids = b.get("facturas") or []
+    if not ids:
+        con.close()
+        return jsonify({"error": "no elegiste ninguna factura"}), 400
+    codigo = (b.get("codigo") or "").strip() or None
+    alic = None if b.get("alicuota") in (None, "") else _n(b.get("alicuota"))
+    jur = None
+    if codigo:
+        act = con.execute(
+            "SELECT jurisdiccion, alicuota FROM maestro_actividades "
+            "WHERE cuit=? AND codigo=? AND alicuota=?",
+            (cli["cuit"], codigo, alic)).fetchone()
+        if not act:
+            con.close()
+            return jsonify({"error": "ese par actividad+alícuota no está en el "
+                                     "padrón del cliente"}), 400
+        jur = act["jurisdiccion"]
+
+    hechas, ajenas = 0, 0
+    for fid in ids:
+        f = _de_este_cliente(con, "facturas", fid, cli["id"])
+        # ⚠ Se saltea en silencio lo que no es de este cliente, pero se cuenta
+        # y se informa: una asignación masiva que toca la factura de otro
+        # cliente sería exactamente el agujero que el aislamiento evita.
+        if not f:
+            ajenas += 1
+            continue
+        if f["mov"] != "venta":
+            ajenas += 1
+            continue
+        con.execute("UPDATE facturas SET iibb_jurisdiccion=?, iibb_codigo=?, "
+                    " iibb_alicuota=? WHERE id=?", (jur, codigo, alic, fid))
+        hechas += 1
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "asignadas": hechas, "salteadas": ajenas})
+
+
+@app.get("/api/c/facturas/sin-actividad")
+def api_facturas_sin_actividad():
+    """Las ventas que todavía no tienen actividad, agrupadas por cliente.
+
+    Agrupar por cliente es lo que hace el trabajo posible: en el primer caso,
+    15 de las 56 ventas son a la misma Municipalidad y explican $78 de los $91
+    millones. Se decide una vez y se aplican las quince."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    q = ("SELECT f.id, f.fecha, f.tipo, f.letra, f.punto_venta, f.numero, f.neto, f.total, "
+         "  f.iibb_codigo, f.iibb_alicuota, m.razon_social AS entidad, e.id AS entidad_id "
+         "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+         "JOIN maestro_entidades m ON m.cuit=e.cuit "
+         "WHERE f.cliente_id=? AND f.mov='venta'")
+    args = [cli["id"]]
+    if request.args.get("periodo"):
+        rango = _rango_periodo(request.args["periodo"])
+        if rango:
+            q += " AND f.fecha BETWEEN ? AND ?"
+            args += list(rango)
+    if request.args.get("solo_sin"):
+        q += " AND (f.iibb_codigo IS NULL OR f.iibb_codigo='')"
+    fs = filas(con.execute(q + " ORDER BY m.razon_social, f.fecha", args))
+    con.close()
+    grupos = {}
+    for f in fs:
+        g = grupos.setdefault(f["entidad"], {"entidad": f["entidad"],
+                                             "entidad_id": f["entidad_id"],
+                                             "facturas": [], "neto": 0.0})
+        g["facturas"].append(f)
+        g["neto"] = round(g["neto"] + _n(f["neto"]), 2)
+    return jsonify({
+        "grupos": sorted(grupos.values(), key=lambda g: -g["neto"]),
+        "total": len(fs),
+        "sin_actividad": len([f for f in fs if not f["iibb_codigo"]]),
+        "neto_total": round(sum(_n(f["neto"]) for f in fs), 2),
+    })
+
+
 @app.post("/api/c/facturas/<int:fid>/actividad")
 def api_factura_actividad(fid):
     """Asigna el par actividad+alícuota a una venta que quedó sin él — es lo
