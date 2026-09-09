@@ -165,6 +165,11 @@ CREATE TABLE movimientos_banco (
     -- ahí el mes se puede leer. Lo llenan las reglas (`reglas_clasificacion`).
     rango        TEXT,                             -- Ingreso | Egreso | Impuesto | …
     subrango     TEXT,                             -- el concepto
+    -- ⚠ EL TRIBUTO VA TIPADO, no adentro del texto del subrango. La percepción
+    -- de IVA que cobra el banco es crédito en la DJ de IVA y la de IIBB en la
+    -- de IIBB: si el único dato fuera «Percepción IVA» escrito a mano, un
+    -- «PERC.I.V.A.» de otro banco no computaría y nadie lo notaría.
+    tributo      TEXT,                             -- percepcion_iva | retencion_iibb | …
     cuit_contraparte TEXT,
     pago_id      INTEGER,
     conciliado   INTEGER NOT NULL DEFAULT 0,
@@ -268,6 +273,7 @@ CREATE TABLE reglas_clasificacion (
     patron     TEXT NOT NULL,              -- se busca dentro del concepto
     rango      TEXT NOT NULL,              -- Ingreso | Egreso | Impuesto | …
     subrango   TEXT NOT NULL,              -- el concepto, abierto
+    tributo    TEXT,                       -- si ese concepto ES un tributo, cuál
     -- ⚠ Prioridad MENOR gana: las reglas se aplican de mayor a menor para que
     -- la más específica escriba última. Al revés, la general le pisa el
     -- resultado a la que la persona escribió para ese caso puntual.

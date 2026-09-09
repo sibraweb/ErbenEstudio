@@ -361,6 +361,14 @@ def _migrar(con):
             CREATE INDEX IF NOT EXISTS ix_reglas ON reglas_clasificacion(cliente_id, prioridad);""")
         con.commit()
 
+    # ── el tributo del movimiento, tipado ──
+    cm = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
+    if "tributo" not in cm:
+        print("  migrando: tributo tipado en los movimientos del banco…")
+        con.execute("ALTER TABLE movimientos_banco ADD COLUMN tributo TEXT")
+        con.execute("ALTER TABLE reglas_clasificacion ADD COLUMN tributo TEXT")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -873,10 +881,12 @@ def _aplicar_reglas(con, cid, solo=None):
     cambiados = 0
     for r in con.execute(q + " ORDER BY prioridad DESC, id DESC", args).fetchall():
         cur = con.execute(
-            "UPDATE movimientos_banco SET rango=?, subrango=? "
+            "UPDATE movimientos_banco SET rango=?, subrango=?, tributo=? "
             "WHERE cliente_id=? AND LOWER(COALESCE(descripcion,'')) LIKE '%'||LOWER(?)||'%' "
-            "AND (COALESCE(rango,'') <> ? OR COALESCE(subrango,'') <> ?)",
-            (r["rango"], r["subrango"], cid, r["patron"], r["rango"], r["subrango"]))
+            "AND (COALESCE(rango,'') <> ? OR COALESCE(subrango,'') <> ? "
+            "     OR COALESCE(tributo,'') <> ?)",
+            (r["rango"], r["subrango"], r["tributo"], cid, r["patron"],
+             r["rango"], r["subrango"], r["tributo"] or ""))
         cambiados += cur.rowcount
     return cambiados
 
@@ -920,10 +930,14 @@ def api_regla_alta():
     if b["rango"] not in RANGOS:
         con.close()
         return jsonify({"error": f"rango desconocido: {b['rango']}"}), 400
+    trib = (b.get("tributo") or "").strip() or None
+    if trib and trib not in TRIBUTOS_VALIDOS:
+        con.close()
+        return jsonify({"error": f"tributo desconocido: {trib}"}), 400
     cur = con.execute(
-        "INSERT INTO reglas_clasificacion (cliente_id, patron, rango, subrango, prioridad, "
-        " activa, nota) VALUES (?,?,?,?,?,1,?)",
-        (cli["id"], b["patron"].strip(), b["rango"].strip(), b["subrango"].strip(),
+        "INSERT INTO reglas_clasificacion (cliente_id, patron, rango, subrango, tributo, "
+        " prioridad, activa, nota) VALUES (?,?,?,?,?,?,1,?)",
+        (cli["id"], b["patron"].strip(), b["rango"].strip(), b["subrango"].strip(), trib,
          int(b.get("prioridad") or 100), b.get("nota")))
     rid = cur.lastrowid
     cambiados = _aplicar_reglas(con, cli["id"], solo=rid)
@@ -979,11 +993,108 @@ def api_clasificar_uno(mid):
     if b.get("rango") and b["rango"] not in RANGOS:
         con.close()
         return jsonify({"error": f"rango desconocido: {b['rango']}"}), 400
-    con.execute("UPDATE movimientos_banco SET rango=?, subrango=? WHERE id=?",
-                (b.get("rango"), b.get("subrango"), mid))
+    # El tributo es opcional, pero si viene tiene que ser uno del catálogo: de
+    # acá sale el crédito de las DJ y un nombre inventado no computaría nunca.
+    trib = (b.get("tributo") or "").strip() or None
+    if trib and trib not in TRIBUTOS_VALIDOS:
+        con.close()
+        return jsonify({"error": f"tributo desconocido: {trib}"}), 400
+    con.execute("UPDATE movimientos_banco SET rango=?, subrango=?, tributo=? WHERE id=?",
+                (b.get("rango"), b.get("subrango"), trib, mid))
     con.commit()
     con.close()
     return jsonify({"ok": True})
+
+
+@app.get("/api/c/bancos/tributos")
+def api_bancos_tributos():
+    """Lo que el banco cobró de IVA y de IIBB: lo tipado y lo que falta tipar.
+
+    Se mira desde Facturas y no desde Bancos a propósito. Acá no se está
+    leyendo el extracto: se está armando el CRÉDITO de las dos DJ, y por eso lo
+    que importa no es contra qué cuenta cayó sino contra qué impuesto va.
+
+    Lo tipado ya computa; lo propuesto todavía no. Esa diferencia es el sentido
+    de la pantalla: sin ella, o se resta por parecido o no se resta nunca."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    todos = CREDITO_IVA + CREDITO_IIBB
+    marcas = ",".join("?" * len(todos))
+    tipados = filas(con.execute(
+        "SELECT m.id, m.fecha, m.descripcion, m.importe, m.tributo, m.subrango, "
+        "  c.banco, c.numero FROM movimientos_banco m "
+        "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        f"WHERE m.cliente_id=? AND m.tributo IN ({marcas}) ORDER BY m.fecha DESC",
+        (cli["id"], *todos)))
+    donde, pats = _sql_sugeridos(todos)
+    propuestos = filas(con.execute(
+        "SELECT m.id, m.fecha, m.descripcion, m.importe, m.subrango, "
+        "  c.banco, c.numero FROM movimientos_banco m "
+        "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
+        "WHERE m.cliente_id=? AND m.importe < 0 AND COALESCE(m.tributo,'')='' "
+        f"AND ({donde}) ORDER BY m.fecha DESC", (cli["id"], *pats)))
+    for p in propuestos:
+        p["parece"] = _que_tributo_parece(p["descripcion"])
+
+    def suma(rs, tipos, campo="tributo"):
+        return round(sum(abs(_n(r["importe"])) for r in rs
+                         if (r.get(campo) if campo == "parece" else r[campo]) in tipos), 2)
+
+    con.close()
+    return jsonify({
+        "tipados": tipados, "propuestos": propuestos,
+        "iva": {"computa": suma(tipados, CREDITO_IVA),
+                "propuesto": suma(propuestos, CREDITO_IVA, "parece")},
+        "iibb": {"computa": suma(tipados, CREDITO_IIBB),
+                 "propuesto": suma(propuestos, CREDITO_IIBB, "parece")},
+        "nota": "Lo tipado ya está descontado en la posición de IVA y en la DJ "
+                "de IIBB. Lo propuesto todavía no computa en ninguna.",
+    })
+
+
+@app.post("/api/c/bancos/tributos")
+def api_bancos_tributos_tipar():
+    """Decir de qué es cada débito. `tributo` vacío lo saca de las DJ.
+
+    Acepta una lista para que confirmar veinte percepciones sea un clic: son
+    todas del mismo régimen y de a una nadie las carga."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    trib = (b.get("tributo") or "").strip() or None
+    if trib and trib not in TRIBUTOS_VALIDOS:
+        con.close()
+        return jsonify({"error": f"tributo desconocido: {trib}"}), 400
+    ids = [int(x) for x in (b.get("movimientos") or [])]
+    # `parece`: en vez de un tributo fijo, a cada uno el suyo. Es lo que hace
+    # el botón «confirmar todas» cuando hay percepciones de IVA y de IIBB
+    # mezcladas en la misma lista.
+    porsi = bool(b.get("parece"))
+    if not ids:
+        con.close()
+        return jsonify({"error": "no viene ningún movimiento"}), 400
+    n = 0
+    for mid in ids:
+        if not _de_este_cliente(con, "movimientos_banco", mid, cli["id"]):
+            continue
+        t = trib
+        if porsi:
+            m = con.execute("SELECT descripcion FROM movimientos_banco WHERE id=?",
+                            (mid,)).fetchone()
+            t = _que_tributo_parece(m["descripcion"]) if m else None
+            if not t:
+                continue
+        con.execute("UPDATE movimientos_banco SET tributo=? WHERE id=?", (t, mid))
+        n += 1
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "tipados": n})
 
 
 @app.get("/api/c/bancos/mes-detalle/<mes>")
@@ -2655,6 +2766,56 @@ def api_pago_fiscal_atar(pfid):
     return jsonify({"ok": True})
 
 
+def _determinados(con, cli):
+    """Lo que el sistema YA determinó y todavía no tiene vencimiento cargado.
+
+    Un mes de IVA que cierra a pagar es deuda desde que se liquida. Pero la
+    deuda de Tesorería sale de la tabla `vencimientos`, que la llenan los jobs
+    del portal: hasta que ese vencimiento aparezca, la plata se debe y la
+    pantalla dice cero. Es el mismo hueco que teníamos con los VEP, del otro
+    lado.
+
+    ⚠ NO SE LE INVENTA FECHA. El día exacto depende de la terminación del CUIT
+    y lo trae el calendario de ARCA; poner una fecha calculada sería escribir
+    un dato que nadie leyó. Por eso esto se muestra APARTE del calendario, y
+    pasa a ser un vencimiento recién cuando alguien le pone la fecha.
+    """
+    cid = cli["id"]
+    cargados = [(str(r["impuesto"] or "").upper(), str(r["periodo"] or ""))
+                for r in con.execute(
+                    "SELECT impuesto, periodo FROM vencimientos WHERE cliente_id=?", (cid,))]
+
+    def ya_esta(sigla, per):
+        # Los jobs escriben «IVA», «I.V.A.» o «Impuesto al Valor Agregado»
+        # según la pantalla de donde salga: alcanza con que lo nombre.
+        return any(per == p and sigla in imp.replace(".", "") for imp, p in cargados)
+
+    out = []
+    for f in _cadena_iva(con, cid):
+        if f["a_pagar"] <= 0.01:
+            continue
+        per = f"{f['periodo'][5:7]}/{f['periodo'][:4]}"
+        if not ya_esta("IVA", per):
+            out.append({"impuesto": "IVA", "periodo": per, "importe": f["a_pagar"],
+                        "de_donde": "posición de IVA", "donde_mirarlo": "facturas",
+                        "control_ok": True})
+    for r in con.execute(
+            "SELECT DISTINCT substr(fecha,1,7) AS mes FROM facturas "
+            "WHERE cliente_id=? AND mov='venta' ORDER BY 1", (cid,)):
+        per = f"{r['mes'][5:7]}/{r['mes'][:4]}"
+        if ya_esta("IIBB", per) or ya_esta("INGRESOSBRUTOS", per):
+            continue
+        d = _dj_iibb(con, cli, per)
+        if d["resultado"] == "a pagar" and d["saldo"] > 0.01:
+            out.append({"impuesto": "IIBB", "periodo": per, "importe": d["saldo"],
+                        "de_donde": "DJ de IIBB", "donde_mirarlo": "iibb",
+                        # Si las bases no cierran contra las ventas, ese número
+                        # todavía no se puede presentar: se dice acá.
+                        "control_ok": d["control_ok"]})
+    out.sort(key=lambda x: (x["periodo"][3:], x["periodo"][:2]))
+    return out
+
+
 @app.get("/api/c/tesoreria/impuestos")
 def api_tesoreria_impuestos():
     """La deuda impositiva, y si cada pago está atado a su débito del banco.
@@ -2685,9 +2846,12 @@ def api_tesoreria_impuestos():
     def suma(f):
         return round(sum(_n(v["importe"]) for v in vs if f(v)), 2)
 
+    det = _determinados(con, cli)
     con.close()
     return jsonify({
         "vencimientos": vs,
+        "determinados": det,
+        "determinado_total": round(sum(d["importe"] for d in det), 2),
         "deuda_total": suma(lambda v: v["estado"] != "pagado"),
         "vencido": suma(lambda v: v["vencido"]),
         "a_vencer": suma(lambda v: v["estado"] != "pagado" and not v["vencido"]),
@@ -3362,6 +3526,80 @@ CREDITO_IVA = ("percepcion_iva", "retencion_iva")
 CREDITO_IIBB = ("percepcion_iibb", "retencion_iibb")
 
 
+# ── LO QUE COBRA EL BANCO ────────────────────────────────────────────────────
+# La percepción de IVA y la de IIBB no siempre vienen dentro de una factura: el
+# banco las debita de la cuenta y el único papel es el resumen. Son crédito
+# igual —y en un cliente con movimiento bancario, plata— así que tienen que
+# entrar en las dos DJ, cada una en la suya.
+#
+# Cómo se leen: por el TRIBUTO TIPADO del movimiento, no por su texto. El texto
+# alcanza para PROPONER y nada más, por las dos puntas: un banco que escribe
+# «PERC.I.V.A.» no coincide con el patrón y su crédito se perdería, y cualquier
+# renglón que traiga esas letras se restaría sin que nadie lo haya mirado.
+SUGERENCIAS_BANCO = [
+    ("percepcion_iva",  ["%perc%iva%", "%perc%i.v.a%"]),
+    ("retencion_iva",   ["%ret%iva%", "%ret%i.v.a%"]),
+    ("percepcion_iibb", ["%perc%iibb%", "%perc%ing%brut%", "%perc%i.b.%"]),
+    # SIRCREB es el régimen que recauda IIBB sobre lo que se ACREDITA en la
+    # cuenta: es retención, no percepción, y va contra la DJ de IIBB.
+    ("retencion_iibb",  ["%sircreb%", "%ret%iibb%", "%ret%ing%brut%"]),
+]
+
+
+def _tributos_banco(con, cid, tipos, desde=None, hasta=None):
+    """{mes: monto} de lo que el banco debitó por esos tributos, ya tipado."""
+    marcas = ",".join("?" * len(tipos))
+    q = ("SELECT substr(fecha,1,7) AS mes, ROUND(SUM(-importe),2) AS monto "
+         "FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
+         f"AND tributo IN ({marcas})")
+    args = [cid, *tipos]
+    if desde and hasta:
+        q += " AND fecha BETWEEN ? AND ?"
+        args += [desde, hasta]
+    return {r["mes"]: _n(r["monto"]) for r in con.execute(q + " GROUP BY 1", args)}
+
+
+def _sql_sugeridos(tipos):
+    """El pedazo de WHERE que reconoce los que SE PARECEN, y sus patrones."""
+    pats = [p for t, ps in SUGERENCIAS_BANCO if t in tipos for p in ps]
+    if not pats:
+        return None, []
+    return " OR ".join(["LOWER(COALESCE(descripcion,'')) LIKE ?"] * len(pats)), pats
+
+
+def _sugeridos_banco(con, cid, tipos, desde=None, hasta=None):
+    """{mes: monto} de los que se parecen y nadie tipó. ⚠ NO COMPUTAN."""
+    donde, pats = _sql_sugeridos(tipos)
+    if not donde:
+        return {}
+    q = ("SELECT substr(fecha,1,7) AS mes, ROUND(SUM(-importe),2) AS monto "
+         "FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
+         f"AND COALESCE(tributo,'')='' AND ({donde})")
+    args = [cid, *pats]
+    if desde and hasta:
+        q += " AND fecha BETWEEN ? AND ?"
+        args += [desde, hasta]
+    return {r["mes"]: _n(r["monto"]) for r in con.execute(q + " GROUP BY 1", args)}
+
+
+def _que_tributo_parece(texto):
+    """Qué tributo parece un concepto del extracto, o None."""
+    t = (texto or "").lower()
+    for tipo, pats in SUGERENCIAS_BANCO:
+        for p in pats:
+            trozos = [x for x in p.split("%") if x]
+            i, ok = 0, True
+            for z in trozos:
+                j = t.find(z, i)
+                if j < 0:
+                    ok = False
+                    break
+                i = j + len(z)
+            if ok:
+                return tipo
+    return None
+
+
 @app.get("/api/tributos")
 def api_tributos():
     """El catálogo. Es público: no tiene datos de nadie."""
@@ -3439,18 +3677,18 @@ def _cadena_iva(con, cid):
         "FROM factura_tributos t JOIN facturas f ON f.id=t.factura_id "
         "WHERE f.cliente_id=? AND t.tipo='sin_clasificar' GROUP BY 1", (cid,))}
 
-    # La percepción de IVA que cobra el BANCO no está en ninguna factura: se la
-    # debita a la cuenta. En el ERP sale del resumen bancario y es plata que
-    # también resta de la posición, así que si el movimiento está clasificado
-    # como percepción de IVA, entra acá.
-    banco = {r["mes"]: _n(r["monto"]) for r in con.execute(
-        "SELECT substr(fecha,1,7) AS mes, ROUND(SUM(-importe),2) AS monto "
-        "FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
-        # No hay tabla de percepciones: lo único que hay es lo que escribe
-        # el banco en el concepto. Es tosco, pero es el dato que existe — y
-        # dejarlo afuera sería restar de menos.
-        "  AND LOWER(COALESCE(descripcion,'')) LIKE '%perc%iva%' "
-        "GROUP BY 1", (cid,))}
+    # La percepción y la retención de IVA que cobra el BANCO no están en
+    # ninguna factura: se debitan de la cuenta y el único papel es el resumen.
+    # Son crédito igual que las de una compra.
+    #
+    # ⚠ ACÁ ANTES SE MIRABA EL TEXTO del extracto (`LIKE '%perc%iva%'`) y se
+    # restaba lo que coincidiera. Fallaba por las dos puntas: el banco que
+    # escribe «PERC.I.V.A.» no coincidía —y ese crédito se perdía— y cualquier
+    # renglón con esas letras se restaba sin que nadie lo mirara. Ahora computa
+    # lo TIPADO; lo que solo se parece se propone en Facturas → «Del banco» y
+    # no entra en la cuenta hasta que alguien lo confirma.
+    banco = _tributos_banco(con, cid, CREDITO_IVA)
+    banco_sug = _sugeridos_banco(con, cid, CREDITO_IVA)
 
     # De dónde arranca y con cuánto venía. Es un dato DECLARADO: sale de la
     # última DJ que presentó el cliente antes de que el estudio lo tomara, y no
@@ -3460,7 +3698,7 @@ def _cadena_iva(con, cid):
     saldo = _n(ini["a_favor"]) if ini else 0.0
     arranque = f"{ini['periodo'][3:]}-{ini['periodo'][:2]}" if ini else None
 
-    meses = sorted(set(porm) | set(banco) | set(reten)
+    meses = sorted(set(porm) | set(banco) | set(banco_sug) | set(reten)
                    | ({arranque} if arranque else set()))
     if arranque:
         meses = [m for m in meses if m >= arranque]
@@ -3483,6 +3721,7 @@ def _cadena_iva(con, cid):
         serie.append({
             "periodo": mes, "debito": debito, "credito": credito,
             "percepciones": percep, "percepciones_banco": banco.get(mes, 0.0),
+            "banco_sin_tipar": banco_sug.get(mes, 0.0),
             "retenciones_iva": reten.get(mes, 0.0),
             "sin_clasificar": sin_clas.get(mes, 0.0),
             "posicion": posicion, "saldo_favor_anterior": round(anterior, 2),
@@ -3558,6 +3797,8 @@ def api_iva_posicion():
         "actual": ultimo,
         "saldo_favor_hoy": ultimo["saldo_favor_final"] if ultimo else 0.0,
         "total_a_pagar": round(sum(f["a_pagar"] for f in serie), 2),
+        "credito_banco": round(sum(f["percepciones_banco"] for f in serie), 2),
+        "banco_sin_tipar": round(sum(f["banco_sin_tipar"] for f in serie), 2),
         "inicial": dict(ini) if ini else None,
         "nota": "Posición = débito − crédito − percepciones. Si da negativa "
                 "engrosa el saldo a favor; si da positiva primero consume el "
@@ -3712,12 +3953,23 @@ def api_dj_base():
     if err:
         con.close()
         return err
-    rango = _rango_periodo(request.args.get("periodo"))
-    if not rango:
+    periodo = (request.args.get("periodo") or "").strip()
+    if not _rango_periodo(periodo):
         con.close()
         return jsonify({"error": "falta ?periodo=MM/YYYY"}), 400
-    desde, hasta = rango
-    jur = request.args.get("jurisdiccion")
+    d = _dj_iibb(con, cli, periodo, request.args.get("jurisdiccion"))
+    con.close()
+    return jsonify(d)
+
+
+def _dj_iibb(con, cli, periodo, jur=None):
+    """La DJ de IIBB de un período — la cuenta, en un solo lugar.
+
+    Vive fuera de la ruta porque Tesorería también la necesita: un impuesto que
+    el sistema ya determinó es deuda aunque nadie haya cargado el vencimiento,
+    y si cada pantalla lo calculara por su cuenta terminarían dando distinto.
+    """
+    desde, hasta = _rango_periodo(periodo)
 
     # ⚠⚠ LA BASE DE IIBB ES EL **NETO**, NO EL TOTAL (corregido 05/09).
     # Acá sumaba `total`, o sea el neto MÁS el IVA, y el impuesto salía inflado
@@ -3769,6 +4021,13 @@ def api_dj_base():
         "WHERE r.cliente_id=? AND r.direccion='sufrida' AND r.tipo='retencion_iibb' "
         "AND COALESCE(r.fecha, p.fecha) BETWEEN ? AND ?",
         (cli["id"], desde, hasta)).fetchone()[0])
+    # LO QUE COBRÓ EL BANCO. En IIBB pesa más que en IVA: el SIRCREB recauda
+    # sobre TODO lo que se acredita en la cuenta, mes a mes, y no aparece en
+    # ningún comprobante. Una DJ que lo ignore paga dos veces el mismo impuesto.
+    perc_banco = round(sum(_tributos_banco(
+        con, cli["id"], CREDITO_IIBB, desde, hasta).values()), 2)
+    banco_sin_tipar = round(sum(_sugeridos_banco(
+        con, cli["id"], CREDITO_IIBB, desde, hasta).values()), 2)
     # Lo que nadie clasificó: no se descuenta —no se sabe de qué es— pero se
     # avisa, porque puede haber percepción de IIBB escondida ahí.
     sin_clas = _n(con.execute(
@@ -3790,7 +4049,7 @@ def api_dj_base():
     portal = con.execute(
         "SELECT * FROM iibb_deducciones WHERE cliente_id=? AND periodo=?"
         + (" AND jurisdiccion=?" if jur else ""),
-        (cli["id"], request.args["periodo"], *( [jur] if jur else [] ))).fetchone()
+        (cli["id"], periodo, *([jur] if jur else []))).fetchone()
 
     detalle_ded, a_favor = {}, 0.0
     if portal:
@@ -3800,17 +4059,18 @@ def api_dj_base():
         fuente_ded = "portal"
     else:
         detalle_ded = {k: v for k, v in
-                       (("percepciones", perc_iibb), ("retenciones", ret_iibb)) if v}
-        deducciones = round(perc_iibb + ret_iibb, 2)
+                       (("percepciones", perc_iibb), ("retenciones", ret_iibb),
+                        ("del banco", perc_banco)) if v}
+        deducciones = round(perc_iibb + ret_iibb + perc_banco, 2)
         fuente_ded = "nuestros comprobantes"
 
     saldo = round(determinado - deducciones - a_favor, 2)
-    con.close()
-    return jsonify({
-        "periodo": request.args["periodo"], "jurisdiccion": jur,
+    return {
+        "periodo": periodo, "jurisdiccion": jur,
         "bases": bases,
         "impuesto_determinado": determinado,
         "percepciones_iibb": perc_iibb, "retenciones_iibb": ret_iibb,
+        "deducciones_banco": perc_banco, "banco_sin_tipar": banco_sin_tipar,
         "deducciones": deducciones, "deducciones_detalle": detalle_ded,
         "deducciones_fuente": fuente_ded,
         "saldo_a_favor_anterior": a_favor,
@@ -3821,7 +4081,7 @@ def api_dj_base():
         "control_ok": abs(suma_bases - total_ventas) < 0.01,
         "diferencia": round(total_ventas - suma_bases, 2),
         "sin_actividad": sin_act,
-    })
+    }
 
 
 @app.get("/api/c/djs")
