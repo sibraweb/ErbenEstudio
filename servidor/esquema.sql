@@ -235,6 +235,21 @@ CREATE TABLE cheque_eventos (
     estado     TEXT
 );
 CREATE INDEX ix_chqev ON cheque_eventos(cheque_id, id);
+-- La chequera propia: qué números hay y cuál sigue. Sin esto, «¿qué número le
+-- pongo al cheque?» se contesta mirando el talonario, y ahí es donde se
+-- saltean o se repiten números.
+CREATE TABLE chequeras (
+    id         INTEGER PRIMARY KEY,
+    cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+    cuenta_id  INTEGER NOT NULL REFERENCES cuentas_bancarias(id),
+    tipo       TEXT NOT NULL DEFAULT 'comun',   -- comun | diferido
+    desde      INTEGER NOT NULL,
+    hasta      INTEGER NOT NULL,
+    activa     INTEGER NOT NULL DEFAULT 1,
+    nota       TEXT
+);
+CREATE INDEX ix_chequeras ON chequeras(cliente_id, activa);
+
 CREATE INDEX ix_chq_cliente ON cheques(cliente_id, estado);
 CREATE INDEX ix_chq_venc ON cheques(cliente_id, fecha_pago);
 

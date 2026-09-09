@@ -1426,169 +1426,359 @@ async function altaMov(){
   }catch(e){ toast(e.message, true); }
 }
 
-/* ══ CHEQUES ══
-   Copiado del módulo del ERP, pero SIN los circuitos que acá no existen: no hay
-   "me dieron" ni "prestados", y no hay cliente de fantasía. Quedan dos clases y
-   tres nombres:
-     recibido → LIBRADOR (lo firmó) · CLIENTE (nos lo dio) · DESTINO (banco o proveedor)
-     emitido  → lo libramos nosotros y va a un BENEFICIARIO
-   El recibido se carga desde acá, pero por dentro sigue siendo una COBRANZA:
-   nace con su recibo. Si entrara suelto habría plata en cartera sin dueño. */
-let chImpagas = [];
-
-/* Las dos marcas de duplicado, traídas del ERP (Juan, 16/08: «como Excel, un
-   rojo a los duplicados así vemos rápido»). El id de cada cheque repetido se
-   guarda acá para pintarlo en la grilla. */
+/* ══ CHEQUES ══ — el módulo del ERP, con sus pestañas.
+   Del original se sacan dos cosas que acá no existen:
+     · PRESTADOS y «me dieron» — el cheque recibido ES una cobranza;
+     · entidad real / entidad fiscal — acá el cliente real ES el fiscal, y el
+       proveedor real ES el fiscal. Un solo nombre por rol, sin fantasía.
+   Quedan los tres nombres que sí importan: LIBRADOR (quién firmó) · CLIENTE
+   (quién nos lo dio) · DESTINO (banco o proveedor). */
+let chTab = 'tablero', chAlta = 'rec', chImpagas = [];
 let DUP_ROJO = new Set(), DUP_AMBAR = new Set();
+
 function marcaDup(id){
-  return DUP_ROJO.has(id) ? ' style="background:rgba(196,97,76,.18)" title="⚠ CARGADO DOS VECES: hay otro cheque con el mismo número, importe, vencimiento y banco. Es el mismo cheque contado dos veces."'
-    : DUP_AMBAR.has(id) ? ' style="background:rgba(208,166,75,.14)" title="⚠ Mismo número y mismo banco = el mismo cheque, aunque la fecha o el importe difieran. Sobra una fila: decidí cuál de los dos datos vale."'
+  return DUP_ROJO.has(id) ? ' style="background:rgba(196,97,76,.18)" title="⚠ CARGADO DOS VECES: hay otro cheque con el mismo número, importe, vencimiento y banco."'
+    : DUP_AMBAR.has(id) ? ' style="background:rgba(208,166,75,.14)" title="⚠ Mismo número y mismo banco = el mismo cheque, aunque la fecha o el importe difieran. Sobra una fila."'
     : '';
 }
 
 async function vCheques(){
   cargando('Cheques');
-  const [chs, dup, ext] = await Promise.all([
-    api('/api/c/cheques'),
-    api('/api/c/cheques/duplicados').catch(() => ({exactos:[], por_numero:[], n_exactos:0, n_por_numero:0, importe_de_mas:0})),
-    api('/api/c/cheques/en-extracto').catch(() => ({propuestas:[], cantidad:0, total:0})),
-  ]);
+  const tabs = [['tablero','Tablero'],['recibidos','Recibidos / Cartera'],
+                ['emitidos','Emitidos'],['nuevo','Cargar nuevo']];
+  pintar(`<h2>Cheques</h2>
+    <div class="sub">Solo dos clases: los <b>cobrados</b> —que entran por una cobranza y se
+      pueden depositar o endosar— y los <b>emitidos</b> por la empresa.
+      No hay "me dieron" ni "me prestaron", y el cliente real es el fiscal.</div>
+    <div class="tabs">${tabs.map(([k,t]) =>
+      `<button class="${chTab===k?'on':''}" onclick="chTab='${k}';vCheques()">${t}</button>`).join('')}</div>
+    <div id="ch-panel"><div class="vacio">Cargando…</div></div>`);
+  ({tablero:chTablero, recibidos:chRecibidos, emitidos:chEmitidos, nuevo:chNuevo}[chTab])();
+}
+const panelCh = h => { const c = $('#ch-panel'); if (c) c.innerHTML = h; };
+
+async function chCargarDups(){
+  const dup = await api('/api/c/cheques/duplicados').catch(() => ({exactos:[], por_numero:[]}));
   DUP_ROJO = new Set(); DUP_AMBAR = new Set();
   dup.exactos.forEach(g => g.cheques.slice(1).forEach(c => DUP_ROJO.add(c.id)));
   dup.por_numero.forEach(g => g.cheques.slice(1).forEach(c => DUP_AMBAR.add(c.id)));
-  const rec = chs.filter(c => c.origen === 'recibido'), emi = chs.filter(c => c.origen === 'emitido');
-  pintar(`
-    <h2>Cheques</h2>
-    <div class="sub">Solo dos clases: los <b>cobrados</b> —que entran por una cobranza y se pueden depositar
-      o endosar— y los <b>emitidos</b> por la empresa. No hay "me dieron" ni "me prestaron".</div>
-    <div class="aviso">Un cheque cobrado tiene <b>tres roles</b>, y son distintos:
-      el <b>librador</b> lo firmó · el <b>cliente</b> nos lo dio en la cobranza y es el que
-      cancela factura · y termina en un <b>proveedor</b> (endosado) o en un <b>banco</b> (depositado).
+  return dup;
+}
+
+/* ── TABLERO ──
+   Los VENCIMIENTOS POR PLAZO son lo que lo hace útil: «vence en noviembre» no
+   sirve, «esto vence esta semana» sí. Y se separa lo que ENTRA de lo que SALE,
+   porque un día con $3M a cobrar y $3M a pagar no es un día tranquilo: es un
+   día en el que si uno no entra, el otro no sale. */
+async function chTablero(){
+  const [d, dup] = await Promise.all([api('/api/c/cheques/cartera'), chCargarDups()]);
+  panelCh(`
+    <div class="grid">
+      <div class="card"><div class="k">Emitidos pendientes</div>
+        <div class="v sm neg">${plata(d.emitidos_pendientes.total)}</div>
+        <div class="mini">${d.emitidos_pendientes.n} cheque(s) por debitarse</div></div>
+      <div class="card"><div class="k">En cartera</div>
+        <div class="v sm pos">${plata(d.en_cartera.total)}</div>
+        <div class="mini">${d.en_cartera.n} a depositar o endosar</div></div>
+      <div class="card"><div class="k">Vencidos en cartera</div>
+        <div class="v sm ${d.vencidos_en_cartera.n?'neg':''}">${plata(d.vencidos_en_cartera.total)}</div>
+        <div class="mini">${d.vencidos_en_cartera.n} sin depositar ni endosar</div></div>
+      <div class="card"><div class="k">Rechazados</div>
+        <div class="v sm ${d.rechazados.n?'neg':''}">${plata(d.rechazados.total)}</div>
+        <div class="mini">${d.rechazados.n} rebotaron</div></div>
+    </div>
+
+    ${dup.n_exactos || dup.n_por_numero ? `<div class="aviso" style="margin-top:16px;border-left-color:var(--bad)">
+      <b>${dup.n_exactos + dup.n_por_numero} cheque(s) parecen estar cargados dos veces.</b>
+      ${dup.importe_de_mas ? `Hay ${plata(dup.importe_de_mas)} contados de más. ` : ''}
+      Se ven marcados en las grillas de abajo.</div>` : ''}
+
+    <div class="panel" style="margin-top:16px"><div class="panel-h">
+      <b>Vencimientos por plazo</b>
+      <span class="mini">al ${fecha(d.hoy)}</span></div>
+      <div class="panel-b">
+        <div class="mini" style="margin-bottom:10px">Un día con mucho a cobrar y mucho a pagar
+          <b>no es un día tranquilo</b>: es un día en el que si uno no entra, el otro no sale.
+          Por eso van separados y con el acumulado.</div>
+        ${graficoPlazos(d.plazos)}
+      </div>
+      ${tabla(['Plazo','Entra (a cobrar)','Sale (a pagar)','Neto','Acumulado'],
+        d.plazos.map(p => [`<b>${esc(p.plazo)}</b>`,
+          {n: p.cobro ? `<span class="pos">${plata(p.cobro)}</span><div class="mini">${p.cobro_n} chq</div>` : '—'},
+          {n: p.pago ? `<span class="neg">${plata(p.pago)}</span><div class="mini">${p.pago_n} chq</div>` : '—'},
+          {n: `<span class="${p.neto<0?'neg':'pos'}">${plata(p.neto)}</span>`},
+          {n: `<b class="${p.acumulado<0?'neg':''}">${plata(p.acumulado)}</b>`}]))}
+    </div>
+
+    ${d.por_librador.length ? `<div class="panel"><div class="panel-h">
+      <b>Quién te debe — por librador</b></div>
+      <div class="panel-b"><div class="mini">Cuánta plata cuelga de cada uno, y si alguna vez
+        rebotó. <b>El rebote es la conducta que importa</b>: no dice cuánto debe en el sistema
+        financiero, dice cómo se portó con vos.</div></div>
+      ${tabla(['Librador','CUIT','Cheques','Importe','Rebotes'],
+        d.por_librador.map(l => [esc(l.librador), esc(l.cuit_librador||'—'), l.n,
+          {n:plata(l.total)},
+          {n: l.rebotes ? `<span class="badge b-bad">${l.rebotes}</span>` : '—'}]))}
+    </div>` : ''}
+
+    ${d.proximos.length ? `<div class="panel"><div class="panel-h"><b>Los próximos a vencer</b></div>
+      ${tabla(['Vence','Clase','Número','Banco','De quién / A quién','Importe'],
+        d.proximos.map(c => [
+          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
+          c.origen === 'recibido' ? '<span class="badge b-ok">a cobrar</span>'
+            : '<span class="badge b-warn">a pagar</span>',
+          esc(c.numero), esc(c.banco||'—'),
+          esc(c.cliente || c.beneficiario || c.librador || '—'),
+          {n:plata(c.importe)}]))}
+    </div>` : ''}`);
+}
+
+/* Las barras por plazo: lo que entra arriba, lo que sale abajo, y la línea del
+   acumulado. Con una sola escala se ve la relación, que es de lo que se trata. */
+function graficoPlazos(ps){
+  if (!ps.length) return '';
+  const W = 700, H = 200, M = {arriba:16, abajo:34, izq:8, der:8};
+  const ancho = W - M.izq - M.der, alto = H - M.arriba - M.abajo;
+  const tope = Math.max(...ps.map(p => Math.max(p.cobro, p.pago)), 1);
+  const cero = M.arriba + alto / 2;
+  const y = v => cero - (v / tope) * (alto / 2);
+  const paso = ancho / ps.length, ab = Math.min(28, paso * 0.34);
+  const x = i => M.izq + paso * i + paso / 2;
+  const AZUL = '#7FB2DA', ROJO = '#E28873';
+  return `<div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%">
+    <line x1="${M.izq}" y1="${cero}" x2="${W-M.der}" y2="${cero}" stroke="var(--bor)"/>
+    ${ps.map((p,i) => `
+      <rect x="${x(i)-ab-1}" y="${y(p.cobro)}" width="${ab}" height="${Math.max(cero-y(p.cobro),0)}"
+        fill="${AZUL}" opacity=".8"><title>${p.plazo}\nA cobrar: ${plata(p.cobro)}</title></rect>
+      <rect x="${x(i)+1}" y="${cero}" width="${ab}" height="${Math.max(cero-y(p.pago),0)}"
+        fill="${ROJO}" opacity=".8"><title>${p.plazo}\nA pagar: ${plata(p.pago)}</title></rect>
+      <text x="${x(i)}" y="${H-18}" text-anchor="middle" font-size="9"
+        fill="var(--mut)">${p.plazo}</text>`).join('')}
+    </svg>
+    <div class="mini"><span style="color:${AZUL}">■</span> a cobrar ·
+      <span style="color:${ROJO}">■</span> a pagar — pasá el mouse para ver los montos</div></div>`;
+}
+
+/* ── RECIBIDOS / CARTERA ── */
+async function chRecibidos(){
+  const [chs] = await Promise.all([api('/api/c/cheques?origen=recibido'), chCargarDups()]);
+  const cart = chs.filter(c => c.estado === 'en_cartera');
+  panelCh(`
+    <div class="aviso">Un cheque cobrado tiene <b>tres roles</b>: el <b>librador</b> lo firmó ·
+      el <b>cliente</b> nos lo dio en la cobranza y es el que cancela factura · y termina en un
+      <b>proveedor</b> (endosado) o en un <b>banco</b> (depositado).
       Si no se sabe quién libró, queda vacío: no se completa con el cliente.</div>
-
-    <div class="row-act" style="margin-bottom:16px">
-      <button onclick="abrirChq('rec')">+ Cheque recibido</button>
-      <button class="g" onclick="abrirChq('emi')">+ Cheque emitido</button>
+    <div class="grid">
+      <div class="card"><div class="k">En cartera</div><div class="v sm pos">${plata(cart.reduce((s,c)=>s+c.importe,0))}</div>
+        <div class="mini">${cart.length} cheque(s)</div></div>
+      <div class="card"><div class="k">Total recibidos</div><div class="v">${chs.length}</div></div>
     </div>
-
-    ${dup.n_exactos || dup.n_por_numero ? `<div class="panel"><div class="panel-h">
-      <b>El mismo cheque contado dos veces</b>
-      <span class="mini">${dup.n_exactos} exacto(s) · ${dup.n_por_numero} con el número repetido</span></div>
-      <div class="panel-b">
-        <div class="mini" style="margin-bottom:8px">Un número de cheque es <b>único dentro de la
-          cuenta</b>: mismo banco + mismo número = el mismo cheque, aunque la fila diga otra fecha
-          o importe. En <span class="neg">rojo</span> los que además coinciden en todo (sobra una
-          fila, sin nada que decidir); en <span class="amb">ámbar</span> los que difieren en algún
-          dato (sobra una igual, pero antes hay que decidir cuál vale).
-          ${dup.importe_de_mas ? `Hay <b>${plata(dup.importe_de_mas)}</b> contados de más.` : ''}</div>
-        ${[...dup.exactos.map(g => [g,'rojo']), ...dup.por_numero.map(g => [g,'ambar'])]
-          .map(([g,clase]) => `<div class="cand" style="display:block">
-            <div><b class="${clase==='rojo'?'neg':'amb'}">Nº ${esc(g.cheques[0].numero)}</b>
-              · ${esc(g.cheques[0].banco||'sin banco')} · ${g.cheques.length} filas
-              ${g.emitido_y_recibido ? '<span class="badge b-warn">entró como emitido Y como recibido</span>' : ''}</div>
-            ${g.cheques.map(c => `<div class="mini">↳ #${c.id} · ${esc(c.origen)} ·
-              ${plata(c.importe)} · vence ${fecha(c.fecha_pago)} · ${esc(c.estado)}</div>`).join('')}
-          </div>`).join('')}
-      </div></div>` : ''}
-
-    ${ext.cantidad ? `<div class="panel"><div class="panel-h">
-      <b>El banco nombra cheques que no están cargados</b>
-      <span class="mini">${ext.cantidad} · ${plata(ext.total)}</span></div>
-      <div class="panel-b">
-        <div class="mini" style="margin-bottom:8px">El extracto nombra el cheque en el concepto.
-          Si ese número no está en la cartera, o se emitió uno y nadie lo cargó, o se depositó uno
-          que no estaba anotado. <b>Se proponen, no se crean</b>: el banco dice el número y el
-          importe, pero no quién libró ni de qué cobranza vino.</div>
-        ${ext.propuestas.slice(0,20).map(x => `<div class="cand" style="display:block">
-          <b>Nº ${esc(x.numero)}</b> · sería <b>${esc(x.seria)}</b> ·
-          ${fecha(x.fecha)} · ${esc(x.banco)} ·
-          <span class="${x.importe<0?'neg':'pos'}">${plata(x.importe)}</span>
-          <div class="mini">${esc((x.descripcion||'').slice(0,80))}</div></div>`).join('')}
-        ${ext.cantidad > 20 ? `<div class="mini">y ${ext.cantidad - 20} más</div>` : ''}
-      </div></div>` : ''}
-
-    <div class="panel hide" id="ch-rec">
-      <div class="panel-h"><b>Nuevo cheque recibido</b>
-        <span class="mini">se guarda como cobranza, con su recibo</span></div>
-      <div class="panel-b">
-        <div class="f">
-          <div class="full"><label>Cliente que nos lo dio</label>
-            <select id="nr-ent" onchange="chImpagasDe()">${optEnt(e => e.es_cliente) || optEnt()}</select></div>
-          <div><label>Nº de recibo</label><input id="nr-recibo" placeholder="REC-0001"></div>
-          <div><label>Fecha de la cobranza</label><input type="date" id="nr-fecha" value="${hoy()}"></div>
-        </div>
-        <div style="margin-top:14px"><b style="font-size:13px">El cheque</b>
-          <div class="f" style="margin-top:6px">
-            <div><label>Número</label><input id="nr-num"></div>
-            <div><label>Banco</label><input id="nr-banco"></div>
-            <div><label>Importe</label><input id="nr-imp" type="number" step="0.01"></div>
-            <div><label>Emisión</label><input type="date" id="nr-fe" value="${hoy()}"></div>
-            <div><label>Vencimiento</label><input type="date" id="nr-fp" value="${hoy()}"></div>
-          </div></div>
-        <div style="margin-top:14px"><b style="font-size:13px">¿Quién lo firmó?</b>
-          <div class="mini" style="margin:4px 0 6px">El librador puede ser un tercero. Se deja vacío si no
-            se sabe — el tilde es para decir <i>expresamente</i> que lo firmó el mismo cliente.</div>
-          <label class="chk"><input type="checkbox" id="nr-lib-igual" onchange="chLibradorIgual()">
-            Lo firmó el mismo cliente</label>
-          <div class="f" style="margin-top:6px">
-            <div><label>Librador</label><input id="nr-lib-nom" placeholder="razón social"></div>
-            <div><label>CUIT del librador</label><input id="nr-lib-cuit" placeholder="opcional"></div>
-          </div></div>
-        <div style="margin-top:14px"><b style="font-size:13px">¿Qué facturas cancela?</b>
-          <div id="nr-facturas" class="mini" style="margin-top:6px">Elegí un cliente…</div></div>
-        <div style="margin-top:16px"><button onclick="altaChequeRecibido()">Guardar cobranza</button></div>
-      </div>
-    </div>
-
-    <div class="panel hide" id="ch-emi">
-      <div class="panel-h"><b>Nuevo cheque emitido</b>
-        <span class="mini">lo libramos nosotros</span></div>
-      <div class="panel-b"><div class="f">
-        <div><label>Número</label><input id="ne-num"></div>
-        <div><label>Banco</label><input id="ne-banco"></div>
-        <div><label>Cuenta (chequera)</label><select id="ne-cta"><option value="">—</option>${optCta()}</select></div>
-        <div class="full"><label>Beneficiario — a quién se lo damos</label>
-          <select id="ne-benef"><option value="">— sin definir —</option>${
-            optEnt(e => e.es_proveedor) || optEnt()}</select></div>
-        <div><label>Importe</label><input id="ne-imp" type="number" step="0.01"></div>
-        <div><label>Emisión</label><input type="date" id="ne-fe" value="${hoy()}"></div>
-        <div><label>Vencimiento</label><input type="date" id="ne-fp" value="${hoy()}"></div>
-        <div class="full"><label>Observaciones</label><input id="ne-nota"></div>
-      </div>
-      <div class="mini" style="margin-top:8px">Si el cheque sale para pagar facturas, conviene emitirlo
-        desde <a href="#pagos">Pagos</a>: ahí queda pegado al recibo y cancela la deuda.</div>
-      <div style="margin-top:14px"><button onclick="altaChequeEmitido()">Emitir</button></div>
-      </div>
-    </div>
-
-    <div class="panel"><div class="panel-h"><b>Cobrados (recibidos) — ${rec.length}</b>
-      <span class="mini">en cartera: ${plata(rec.filter(c=>c.estado==='en_cartera').reduce((s,c)=>s+c.importe,0))}</span></div>
-      ${rec.length ? tabla(['Número','Banco','Librador','Cliente que lo dio','Destino','Vence','Importe','Estado','Acciones'],
-        rec.map(c => [esc(c.numero), esc(c.banco||'—'),
-          c.librador || c.cuit_librador
-            ? esc(c.librador || c.cuit_librador)
+    <div class="panel" style="margin-top:16px"><div class="panel-h">
+      <b>${chs.length} cheque(s) recibidos</b>
+      <button class="g xs" onclick="chTab='nuevo';vCheques()">+ Cargar uno</button></div>
+      ${chs.length ? tabla(['Vence','Número','Banco','Librador','Cliente que lo dio','Salida','Importe','Estado','Acciones'],
+        chs.map(c => [
+          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
+          esc(c.numero), esc(c.banco||'—'),
+          c.librador || c.cuit_librador ? esc(c.librador || c.cuit_librador)
             : '<span class="mini">sin dato</span>',
           `${esc(c.cliente||'—')}${c.recibo_origen ? `<div class="cadena">↳ <i>${esc(c.recibo_origen)}</i></div>` : ''}`,
           c.depositado_en ? `<span class="mini">banco · ${esc(c.depositado_en)}</span>`
             : c.endosado_a ? `<span class="mini">proveedor · ${esc(c.endosado_a)}</span>`
             : '<span class="mini">—</span>',
-          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
-          {n:plata(c.importe)}, badgeEstado(c.estado),
-          accionesCheque(c)]),
-        {fila: i => marcaDup(rec[i].id)})
-        : `<div class="vacio">Sin cheques cobrados.<br>
-           <span class="mini">Se cargan con "+ Cheque recibido", o desde Pagos → cobranza con medio cheque.</span></div>`}
-    </div>
-    <div class="panel"><div class="panel-h"><b>Emitidos — ${emi.length}</b>
-      <span class="mini">a pagar: ${plata(emi.filter(c=>c.estado==='emitido').reduce((s,c)=>s+c.importe,0))}</span></div>
-      ${emi.length ? tabla(['Número','Banco','Beneficiario','Vence','Importe','Estado','Acciones'],
-        emi.map(c => [esc(c.numero), esc(c.banco||'—'),
-          c.beneficiario ? esc(c.beneficiario) : '<span class="mini">sin definir</span>',
-          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
           {n:plata(c.importe)}, badgeEstado(c.estado), accionesCheque(c)]),
-        {fila: i => marcaDup(emi[i].id)})
-        : '<div class="vacio">Sin cheques emitidos.</div>'}
+        {fila: i => marcaDup(chs[i].id)})
+        : `<div class="vacio">Sin cheques recibidos.<br>
+           <span class="mini">Entran por una cobranza: pestaña «Cargar nuevo», o desde Pagos.</span></div>`}
     </div>`);
+}
+
+/* ── EMITIDOS, con las chequeras ── */
+async function chEmitidos(){
+  const [chs, qs] = await Promise.all([
+    api('/api/c/cheques?origen=emitido'),
+    api('/api/c/chequeras').catch(() => []),
+  ]);
+  await chCargarDups();
+  const pend = chs.filter(c => c.estado === 'emitido');
+  panelCh(`
+    <div class="grid">
+      <div class="card"><div class="k">Pendientes de debitarse</div>
+        <div class="v sm neg">${plata(pend.reduce((s,c)=>s+c.importe,0))}</div>
+        <div class="mini">${pend.length} cheque(s)</div></div>
+      <div class="card"><div class="k">Total emitidos</div><div class="v">${chs.length}</div></div>
+    </div>
+    <div class="panel" style="margin-top:16px"><div class="panel-h">
+      <b>${chs.length} cheque(s) emitidos</b>
+      <button class="g xs" onclick="chTab='nuevo';vCheques()">+ Emitir uno</button></div>
+      ${chs.length ? tabla(['Emisión','Vence','Número','Banco','Beneficiario','Importe','Estado','Se debitó','Acciones'],
+        chs.map(c => [fecha(c.fecha_emision),
+          `<span class="${colorFecha(c.fecha_pago)}">${fecha(c.fecha_pago)}</span>`,
+          esc(c.numero), esc(c.banco||'—'),
+          c.beneficiario ? esc(c.beneficiario) : '<span class="mini">sin definir</span>',
+          {n:plata(c.importe)}, badgeEstado(c.estado),
+          c.estado === 'cobrado' ? '<span class="badge b-ok">sí</span>'
+            : '<span class="mini">todavía no</span>',
+          accionesCheque(c)]),
+        {fila: i => marcaDup(chs[i].id)})
+        : '<div class="vacio">Sin cheques emitidos.</div>'}
+    </div>
+
+    <div class="panel"><div class="panel-h"><b>Chequeras</b>
+      <button class="g xs" onclick="toggle('#ch-quera')">+ Cargar una</button></div>
+      <div class="panel-b hide" id="ch-quera">
+        <div class="mini" style="margin-bottom:8px">Cargar la chequera es lo que permite que el
+          sistema diga <b>qué número sigue</b>. Sin eso se contesta mirando el talonario, y ahí
+          es donde se saltean o se repiten números.</div>
+        <div class="f">
+          <div class="full"><label>Cuenta</label><select id="nq-cta">${optCta()}</select></div>
+          <div><label>Tipo</label><select id="nq-tipo">
+            <option value="comun">Común</option><option value="diferido">Diferido</option></select></div>
+          <div><label>Desde el número</label><input id="nq-desde" type="number"></div>
+          <div><label>Hasta el número</label><input id="nq-hasta" type="number"></div>
+          <div style="display:flex;align-items:flex-end"><button onclick="altaChequera()">Guardar</button></div>
+        </div></div>
+      ${qs.length ? tabla(['Banco','Cuenta','Tipo','Desde','Hasta','Usados','Quedan','Estado'],
+        qs.map(q => [esc(q.banco), esc(q.cuenta||'—'), esc(q.tipo), q.desde, q.hasta,
+          q.usados || 0, q.quedan,
+          q.activa ? '<span class="badge b-ok">activa</span>' : '<span class="badge b-mut">cerrada</span>']))
+        : '<div class="vacio">Sin chequeras cargadas.</div>'}
+    </div>`);
+}
+async function altaChequera(){
+  try{ await post('/api/c/chequeras', {cuenta_id:+val('nq-cta'), tipo:val('nq-tipo'),
+    desde:val('nq-desde'), hasta:val('nq-hasta')});
+    toast('Chequera cargada'); chEmitidos();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ── CARGAR NUEVO ──
+   Del ERP se trae el alta DE A UNO O POR LOTE: cuando entran diez cheques de
+   una cobranza, cargarlos de a uno con diez confirmaciones es donde la gente
+   deja de cargarlos.
+
+   El RECIBIDO arma una cobranza por debajo: el botón es nuevo, la puerta es la
+   misma. Un cheque recibido suelto sería plata en cartera sin dueño. */
+let chLote = [];
+
+function chNuevo(){
+  panelCh(`
+    <div class="tabs">
+      <button class="${chAlta==='rec'?'on':''}" onclick="chAlta='rec';chNuevo()">Recibido (cobranza)</button>
+      <button class="${chAlta==='emi'?'on':''}" onclick="chAlta='emi';chNuevo()">Emitido</button>
+    </div>
+    ${chAlta === 'rec' ? formRecibido() : formEmitido()}
+    ${chLote.length ? `<div class="panel"><div class="panel-h">
+      <b>${chLote.length} cheque(s) en la lista</b>
+      <span class="mini">${plata(chLote.reduce((s,c)=>s+(c.importe||0),0))}</span></div>
+      ${tabla(['Número','Banco','Vence','Importe',''], chLote.map((c,i) =>
+        [esc(c.numero), esc(c.banco||'—'), fecha(c.fecha_pago), {n:plata(c.importe)},
+         `<button class="g xs" onclick="chLote.splice(${i},1);chNuevo()">Quitar</button>`]))}
+      <div class="panel-b"><button onclick="guardarLote()">Guardar los ${chLote.length}</button></div>
+    </div>` : ''}`);
+  if (chAlta === 'rec') chImpagasDe();
+}
+
+function formRecibido(){
+  return `<div class="panel"><div class="panel-h"><b>Cheque recibido</b>
+    <span class="mini">se guarda como cobranza, con su recibo</span></div>
+    <div class="panel-b">
+      <div class="f">
+        <div class="full"><label>Cliente que nos lo dio</label>
+          <select id="nr-ent" onchange="chImpagasDe()">${optEnt(e => e.es_cliente) || optEnt()}</select></div>
+        <div><label>Nº de recibo</label><input id="nr-recibo" placeholder="REC-0001"></div>
+        <div><label>Fecha de la cobranza</label><input type="date" id="nr-fecha" value="${hoy()}"></div>
+      </div>
+      <div style="margin-top:14px"><b style="font-size:13px">El cheque</b>
+        <div class="f" style="margin-top:6px">
+          <div><label>Número</label><input id="nr-num"></div>
+          <div><label>Banco</label><input id="nr-banco" list="dl-bancos-chq" placeholder="escribí: nación, galicia…" oninput="buscarBancoChq()">
+            <datalist id="dl-bancos-chq"></datalist></div>
+          <div><label>Importe</label><input id="nr-imp" type="number" step="0.01"></div>
+          <div><label>Emisión</label><input type="date" id="nr-fe" value="${hoy()}"></div>
+          <div><label>Vencimiento</label><input type="date" id="nr-fp" value="${hoy()}"></div>
+        </div></div>
+      <div style="margin-top:14px"><b style="font-size:13px">¿Quién lo firmó?</b>
+        <div class="mini" style="margin:4px 0 6px">El librador puede ser un tercero. Se deja vacío
+          si no se sabe — el tilde es para decir <i>expresamente</i> que lo firmó el mismo cliente.
+          <b>Recién importa si el cheque rebota</b>: es a quien se le reclama.</div>
+        <label class="chk"><input type="checkbox" id="nr-lib-igual" onchange="chLibradorIgual()">
+          Lo firmó el mismo cliente</label>
+        <div class="f" style="margin-top:6px">
+          <div><label>Librador</label><input id="nr-lib-nom" placeholder="razón social"></div>
+          <div><label>CUIT del librador</label><input id="nr-lib-cuit" placeholder="opcional"></div>
+        </div></div>
+      <div style="margin-top:14px"><b style="font-size:13px">¿Qué facturas cancela?</b>
+        <div id="nr-facturas" class="mini" style="margin-top:6px">Elegí un cliente…</div></div>
+      <div class="row-act" style="margin-top:16px">
+        <button onclick="altaChequeRecibido()">Guardar la cobranza</button>
+        <button class="g" onclick="agregarALote()">+ Agregar a la lista</button>
+        <span class="mini" style="align-self:center">la lista es para cuando entran varios de una</span>
+      </div>
+    </div></div>`;
+}
+
+function formEmitido(){
+  return `<div class="panel"><div class="panel-h"><b>Cheque emitido</b>
+    <span class="mini">lo libramos nosotros</span></div>
+    <div class="panel-b"><div class="f">
+      <div><label>Número</label><input id="ne-num">
+        <div class="mini" id="ne-prox"></div></div>
+      <div><label>Banco</label><input id="ne-banco"></div>
+      <div><label>Cuenta (chequera)</label>
+        <select id="ne-cta" onchange="proximoNumero()"><option value="">—</option>${optCta()}</select></div>
+      <div class="full"><label>Beneficiario — a quién se lo damos</label>
+        <select id="ne-benef"><option value="">— sin definir —</option>${
+          optEnt(e => e.es_proveedor) || optEnt()}</select></div>
+      <div><label>Importe</label><input id="ne-imp" type="number" step="0.01"></div>
+      <div><label>Emisión</label><input type="date" id="ne-fe" value="${hoy()}"></div>
+      <div><label>Vencimiento</label><input type="date" id="ne-fp" value="${hoy()}"></div>
+      <div class="full"><label>Observaciones</label><input id="ne-nota"></div>
+    </div>
+    <div class="mini" style="margin-top:8px">Si el cheque sale para pagar facturas, conviene
+      emitirlo desde <a href="#pagos">Pagos</a>: ahí queda pegado al recibo y cancela la deuda.</div>
+    <div style="margin-top:14px"><button onclick="altaChequeEmitido()">Emitir</button></div>
+    </div></div>`;
+}
+
+/* El número que sigue sale de la chequera, no de la memoria de nadie. */
+async function proximoNumero(){
+  const cta = val('ne-cta'); const eco = $('#ne-prox'); if (!eco) return;
+  if (!cta) return eco.textContent = '';
+  const d = await api('/api/c/chequeras/proximo?cuenta_id=' + cta).catch(() => ({}));
+  if (d.proximo){
+    if (!val('ne-num')) $('#ne-num').value = d.proximo;
+    eco.innerHTML = `<span class="pos">sigue el ${esc(d.proximo)}</span> · quedan ${d.quedan}`;
+  } else eco.textContent = d.nota || '';
+}
+async function buscarBancoChq(){
+  const q = val('nr-banco'); if (q.length < 2) return;
+  const bs = await api('/api/bancos/maestro?q=' + encodeURIComponent(q)).catch(() => []);
+  const dl = $('#dl-bancos-chq');
+  if (dl) dl.innerHTML = bs.map(b => `<option value="${esc(b.nombre)}">${esc(b.nombre_corto)}</option>`).join('');
+}
+
+function agregarALote(){
+  const c = {numero: val('nr-num'), banco: val('nr-banco'), importe: num('nr-imp'),
+             fecha_emision: val('nr-fe'), fecha_pago: val('nr-fp'),
+             librador_nombre: val('nr-lib-nom'), cuit_librador: val('nr-lib-cuit')};
+  if (!c.numero) return toast('Falta el número del cheque', true);
+  if (!c.importe) return toast('Falta el importe', true);
+  chLote.push(c);
+  ['nr-num','nr-imp'].forEach(id => { const e = $('#'+id); if (e) e.value = ''; });
+  chNuevo();
+  toast(`${chLote.length} en la lista`);
+}
+async function guardarLote(){
+  const aplicaciones = chImpagas.map((f,i) => $('#nrf-'+i)?.checked ? {factura_id:f.id, importe:f.saldo} : null)
+    .filter(Boolean);
+  try{
+    await post('/api/c/pagos', {direccion:'cobro', entidad_id:+val('nr-ent'),
+      fecha: val('nr-fecha'), numero: val('nr-recibo'), aplicaciones,
+      medios: chLote.map(c => ({medio:'cheque', importe:c.importe, cheque:c}))});
+    toast(`${chLote.length} cheque(s) en cartera — quedó un solo recibo`);
+    chLote = []; chTab = 'recibidos'; vCheques();
+  }catch(e){ toast(e.message, true); }
 }
 
 /* Qué se puede hacer con un cheque según dónde está. Un cheque rechazado no
@@ -1609,12 +1799,6 @@ function accionesCheque(c){
     <button class="g xs" onclick="rebotar(${c.id},'${esc(c.numero)}',${c.importe},'${esc(c.librador||'')}')">Rebotó</button>
     ${hist}</div>`;
   return `<div class="row-act">${hist}</div>`;
-}
-
-function abrirChq(cual){
-  $(cual === 'rec' ? '#ch-emi' : '#ch-rec').classList.add('hide');
-  toggle('#ch-' + cual);
-  if (cual === 'rec') chImpagasDe();
 }
 
 /* El tilde COPIA el cliente al librador y bloquea los campos: queda escrito que

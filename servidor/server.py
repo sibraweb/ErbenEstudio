@@ -331,6 +331,20 @@ def _migrar(con):
             CREATE INDEX IF NOT EXISTS ix_chqev ON cheque_eventos(cheque_id, id);""")
         con.commit()
 
+    # ── las chequeras propias ──
+    if "chequeras" not in tablas:
+        print("  migrando: las chequeras propias…")
+        con.executescript("""
+            CREATE TABLE chequeras (
+                id INTEGER PRIMARY KEY,
+                cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+                cuenta_id INTEGER NOT NULL REFERENCES cuentas_bancarias(id),
+                tipo TEXT NOT NULL DEFAULT 'comun',
+                desde INTEGER NOT NULL, hasta INTEGER NOT NULL,
+                activa INTEGER NOT NULL DEFAULT 1, nota TEXT);
+            CREATE INDEX ix_chequeras ON chequeras(cliente_id, activa);""")
+        con.commit()
+
     cols = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "huella" in cols:
         return
@@ -1339,6 +1353,186 @@ def api_cheque_endosar(chid):
     con.commit()
     con.close()
     return jsonify({"ok": True})
+
+
+# Los plazos del dashboard de cheques, tal como los pidió Juan en el ERP
+# (16/08): no sirve "vence en noviembre", sirve "esto vence esta semana".
+PLAZOS = [("hoy", 0, 0), ("mañana", 1, 1), ("2 días", 2, 2), ("3 a 7", 3, 7),
+          ("8 a 15", 8, 15), ("16 a 30", 16, 30), ("31 a 60", 31, 60),
+          ("+60", 61, 3650)]
+
+
+@app.get("/api/c/cheques/cartera")
+def api_cheques_cartera():
+    """El tablero de cheques: qué hay, cuánto y para cuándo.
+
+    Traído del Dashboard del módulo del ERP. Los VENCIMIENTOS POR PLAZO son lo
+    que lo hace útil: «vence en noviembre» no sirve para nada, «esto vence esta
+    semana» sí. Y se separa lo que ENTRA de lo que SALE, porque un día con
+    $3.000.000 a cobrar y $3.000.000 a pagar no es un día tranquilo: es un día
+    en el que si uno no entra, el otro no sale.
+
+    ⚠ Acá no hay «prestados» ni «me dieron»: el cheque recibido ES una
+    cobranza. Y no hay cliente de fantasía — el cliente real es el fiscal.
+    """
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cid, hoy = cli["id"], _hoy()
+
+    def suma(donde, args=()):
+        r = con.execute(
+            f"SELECT COUNT(*) AS n, ROUND(COALESCE(SUM(importe),0),2) AS total "
+            f"FROM cheques WHERE cliente_id=? AND {donde}", (cid, *args)).fetchone()
+        return {"n": r["n"], "total": _n(r["total"])}
+
+    emitidos = suma("origen='emitido' AND estado='emitido'")
+    cartera = suma("origen='recibido' AND estado='en_cartera'")
+    vencidos = suma("origen='recibido' AND estado='en_cartera' AND fecha_pago < ?", (hoy,))
+    rechazados = suma("estado='rechazado'")
+
+    # ── por plazo, separando lo que entra de lo que sale ─────────────────────
+    plazos = []
+    for nombre, d0, d1 in PLAZOS:
+        fila = {"plazo": nombre, "desde": d0, "hasta": d1}
+        for clave, donde in (("cobro", "origen='recibido' AND estado='en_cartera'"),
+                             ("pago", "origen='emitido' AND estado='emitido'")):
+            r = con.execute(
+                f"SELECT COUNT(*) AS n, ROUND(COALESCE(SUM(importe),0),2) AS total "
+                f"FROM cheques WHERE cliente_id=? AND {donde} "
+                f"AND CAST(JULIANDAY(fecha_pago) - JULIANDAY(?) AS INTEGER) BETWEEN ? AND ?",
+                (cid, hoy, d0, d1)).fetchone()
+            fila[clave] = _n(r["total"])
+            fila[clave + "_n"] = r["n"]
+        fila["neto"] = round(fila["cobro"] - fila["pago"], 2)
+        plazos.append(fila)
+
+    # el acumulado: cómo queda la caja de cheques a medida que pasan los días
+    acum = 0.0
+    for p in plazos:
+        acum = round(acum + p["neto"], 2)
+        p["acumulado"] = acum
+
+    # ── quién te debe, por librador ──────────────────────────────────────────
+    # El equivalente del «riesgo por CUIT» del ERP, sin la parte del BCRA —
+    # ese servicio no está acá. Lo que sí se puede decir es cuánta plata cuelga
+    # de cada uno y si alguna vez rebotó, que es la conducta que importa.
+    por_librador = filas(con.execute(
+        "SELECT COALESCE(ml.razon_social, ch.librador_nombre, 'sin dato') AS librador, "
+        "  ch.cuit_librador, COUNT(*) AS n, ROUND(SUM(ch.importe),2) AS total, "
+        "  SUM(CASE WHEN ch.estado='rechazado' THEN 1 ELSE 0 END) AS rebotes "
+        "FROM cheques ch LEFT JOIN maestro_entidades ml ON ml.cuit=ch.cuit_librador "
+        "WHERE ch.cliente_id=? AND ch.origen='recibido' "
+        "  AND ch.estado IN ('en_cartera','depositado','rechazado') "
+        "GROUP BY 1,2 ORDER BY total DESC", (cid,)))
+
+    proximos = filas(con.execute(
+        "SELECT ch.id, ch.numero, ch.banco, ch.importe, ch.fecha_pago, ch.origen, ch.estado, "
+        "  COALESCE(ml.razon_social, ch.librador_nombre) AS librador, "
+        "  (SELECT mc.razon_social FROM pagos p "
+        "     JOIN entidades_cliente ec ON ec.id=p.entidad_id "
+        "     JOIN maestro_entidades mc ON mc.cuit=ec.cuit WHERE p.id=ch.pago_origen_id) AS cliente, "
+        "  (SELECT mb.razon_social FROM entidades_cliente eb "
+        "     JOIN maestro_entidades mb ON mb.cuit=eb.cuit "
+        "   WHERE eb.id=ch.beneficiario_entidad_id) AS beneficiario "
+        "FROM cheques ch LEFT JOIN maestro_entidades ml ON ml.cuit=ch.cuit_librador "
+        "WHERE ch.cliente_id=? AND ch.estado IN ('en_cartera','emitido') "
+        "ORDER BY ch.fecha_pago LIMIT 40", (cid,)))
+    con.close()
+    return jsonify({
+        "emitidos_pendientes": emitidos, "en_cartera": cartera,
+        "vencidos_en_cartera": vencidos, "rechazados": rechazados,
+        "plazos": plazos, "por_librador": por_librador, "proximos": proximos,
+        "hoy": hoy,
+    })
+
+
+@app.get("/api/c/chequeras")
+def api_chequeras():
+    """Las chequeras propias: qué números quedan y cuál sigue.
+
+    Sin esto, «¿qué número le pongo al cheque que voy a emitir?» se contesta
+    mirando el talonario, y ahí es donde se saltean o se repiten números."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    r = filas(con.execute(
+        "SELECT q.*, c.banco, c.numero AS cuenta, "
+        "  (SELECT COUNT(*) FROM cheques ch WHERE ch.cliente_id=q.cliente_id "
+        "     AND ch.origen='emitido' AND ch.cuenta_id=q.cuenta_id "
+        "     AND CAST(ch.numero AS INTEGER) BETWEEN q.desde AND q.hasta) AS usados "
+        "FROM chequeras q JOIN cuentas_bancarias c ON c.id=q.cuenta_id "
+        "WHERE q.cliente_id=? ORDER BY q.activa DESC, q.desde", (cli["id"],)))
+    con.close()
+    for q in r:
+        q["quedan"] = max(0, (q["hasta"] - q["desde"] + 1) - (q["usados"] or 0))
+        # El próximo no es «el último + 1»: es el primero libre. Si se saltearon
+        # números, decir el último+1 los deja huérfanos para siempre.
+        q["proximo"] = None
+    return jsonify(r)
+
+
+@app.get("/api/c/chequeras/proximo")
+def api_chequera_proximo():
+    """Qué número sigue en la chequera activa de esa cuenta."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    cta = request.args.get("cuenta_id", type=int)
+    q = con.execute(
+        "SELECT * FROM chequeras WHERE cliente_id=? AND activa=1"
+        + (" AND cuenta_id=?" if cta else "") + " ORDER BY desde LIMIT 1",
+        (cli["id"], *( [cta] if cta else [] ))).fetchone()
+    if not q:
+        con.close()
+        return jsonify({"proximo": None,
+                        "nota": "No hay chequera cargada para esa cuenta."})
+    usados = {int(r["numero"]) for r in con.execute(
+        "SELECT numero FROM cheques WHERE cliente_id=? AND origen='emitido' AND cuenta_id=? "
+        "AND numero GLOB '[0-9]*'", (cli["id"], q["cuenta_id"]))
+        if str(r["numero"]).isdigit()}
+    con.close()
+    for n in range(q["desde"], q["hasta"] + 1):
+        if n not in usados:
+            return jsonify({"proximo": str(n).zfill(len(str(q["hasta"]))),
+                            "chequera_id": q["id"], "quedan": q["hasta"] - n + 1})
+    return jsonify({"proximo": None, "nota": "La chequera se terminó."})
+
+
+@app.post("/api/c/chequeras")
+def api_chequera_alta():
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    if not _de_este_cliente(con, "cuentas_bancarias", b.get("cuenta_id"), cli["id"]):
+        con.close()
+        return jsonify({"error": "cuenta inexistente para este cliente"}), 400
+    try:
+        desde, hasta = int(b.get("desde")), int(b.get("hasta"))
+    except (TypeError, ValueError):
+        con.close()
+        return jsonify({"error": "desde y hasta tienen que ser números"}), 400
+    if hasta < desde:
+        con.close()
+        return jsonify({"error": "el hasta no puede ser menor que el desde"}), 400
+    cur = con.execute(
+        "INSERT INTO chequeras (cliente_id, cuenta_id, tipo, desde, hasta, activa, nota) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (cli["id"], b["cuenta_id"], b.get("tipo") or "comun", desde, hasta,
+         1 if b.get("activa", True) else 0, b.get("nota")))
+    con.commit()
+    qid = cur.lastrowid
+    con.close()
+    return jsonify({"ok": True, "id": qid})
 
 
 @app.get("/api/c/cheques/duplicados")
