@@ -361,6 +361,14 @@ def _migrar(con):
             CREATE INDEX IF NOT EXISTS ix_reglas ON reglas_clasificacion(cliente_id, prioridad);""")
         con.commit()
 
+    # ── el saldo con el que arranca la cuenta ──
+    cc = {f[1] for f in con.execute("PRAGMA table_info(cuentas_bancarias)")}
+    if "saldo_inicial" not in cc:
+        print("  migrando: saldo inicial de las cuentas bancarias…")
+        con.execute("ALTER TABLE cuentas_bancarias ADD COLUMN saldo_inicial REAL NOT NULL DEFAULT 0")
+        con.execute("ALTER TABLE cuentas_bancarias ADD COLUMN saldo_inicial_fecha TEXT")
+        con.commit()
+
     # ── el tributo del movimiento, tipado ──
     cm = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "tributo" not in cm:
@@ -793,7 +801,9 @@ def api_cuentas():
         return err
     r = filas(con.execute(
         "SELECT c.*, "
-        "  (SELECT COALESCE(SUM(m.importe),0) FROM movimientos_banco m WHERE m.cuenta_id=c.id) AS saldo_calculado, "
+        "  ROUND(c.saldo_inicial + (SELECT COALESCE(SUM(m.importe),0) FROM movimientos_banco m "
+        "     WHERE m.cuenta_id=c.id),2) AS saldo_calculado, "
+        "  (SELECT COALESCE(SUM(m.importe),0) FROM movimientos_banco m WHERE m.cuenta_id=c.id) AS suma_movimientos, "
         "  (SELECT COUNT(*) FROM movimientos_banco m WHERE m.cuenta_id=c.id) AS movimientos "
         "FROM cuentas_bancarias c WHERE c.cliente_id=? AND c.activa=1 ORDER BY c.banco",
         (cli["id"],)))
@@ -976,6 +986,33 @@ def api_reclasificar():
     con.commit()
     con.close()
     return jsonify({"ok": True, "clasificados": n})
+
+
+@app.post("/api/c/cuentas/<int:cid_cta>/saldo-inicial")
+def api_cuenta_saldo_inicial(cid_cta):
+    """El saldo con el que arranca la cuenta, y desde cuándo vale.
+
+    No es un dato que haya que pedirle a nadie: **sale del propio extracto**.
+    El primer renglón trae su saldo y su importe, y la resta es lo que había
+    antes. Por eso lo escribe el cargador y esta puerta es para corregirlo.
+
+    ⚠ Sin esto, «saldo de la cuenta» es la suma de los movimientos cargados —
+    que es otra cosa. En el primer caso real la diferencia fue de
+    $115.100.198,25: la cuenta tenía 189 millones y la posición mostraba 74."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    if not _de_este_cliente(con, "cuentas_bancarias", cid_cta, cli["id"]):
+        con.close()
+        return jsonify({"error": "cuenta inexistente para este cliente"}), 404
+    b = request.get_json(force=True)
+    con.execute("UPDATE cuentas_bancarias SET saldo_inicial=?, saldo_inicial_fecha=? WHERE id=?",
+                (_n(b.get("saldo_inicial")), (b.get("fecha") or "")[:10] or None, cid_cta))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/c/movimientos/<int:mid>/clasificar")
@@ -3542,7 +3579,14 @@ SUGERENCIAS_BANCO = [
     ("percepcion_iibb", ["%perc%iibb%", "%perc%ing%brut%", "%perc%i.b.%"]),
     # SIRCREB es el régimen que recauda IIBB sobre lo que se ACREDITA en la
     # cuenta: es retención, no percepción, y va contra la DJ de IIBB.
-    ("retencion_iibb",  ["%sircreb%", "%ret%iibb%", "%ret%ing%brut%"]),
+    # «Imp recaud IIBB» es como lo escribe el Banco de Formosa, y es lo mismo
+    # que el SIRCREB: un régimen de RECAUDACIÓN sobre lo que se acredita en la
+    # cuenta. Se vio con datos reales el 10/09 — el 1% de cada crédito, 19
+    # renglones en dos meses. Los patrones de antes no lo agarraban: pedían la
+    # palabra «retención» o «SIRCREB», y este banco no escribe ninguna de las
+    # dos. Un crédito que el sistema no ve es impuesto pagado dos veces.
+    ("retencion_iibb",  ["%sircreb%", "%ret%iibb%", "%ret%ing%brut%",
+                         "%recaud%iibb%", "%recaud%ing%brut%", "%recaud%i.b.%"]),
 ]
 
 
@@ -4276,7 +4320,8 @@ def api_posicion():
     cid = cli["id"]
     cuentas = filas(con.execute(
         "SELECT c.id, c.banco, c.tipo, c.numero, c.moneda, "
-        "  COALESCE((SELECT SUM(m.importe) FROM movimientos_banco m WHERE m.cuenta_id=c.id),0) AS saldo, "
+        "  ROUND(c.saldo_inicial + COALESCE((SELECT SUM(m.importe) FROM movimientos_banco m "
+        "     WHERE m.cuenta_id=c.id),0),2) AS saldo, "
         "  (SELECT MAX(m.fecha) FROM movimientos_banco m WHERE m.cuenta_id=c.id) AS ultimo "
         "FROM cuentas_bancarias c WHERE c.cliente_id=? AND c.activa=1 ORDER BY c.banco", (cid,)))
     uno = lambda q, a: _n(con.execute(q, a).fetchone()[0])

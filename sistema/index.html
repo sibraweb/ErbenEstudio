@@ -1888,6 +1888,15 @@ async function bCuentas(){
       <div class="mini">${esc(c.tipo||'')} ${esc(c.numero||'')} · ${c.movimientos} mov.${
         c.codigo_bcra ? ` · BCRA ${esc(c.codigo_bcra)}` : ' · <span class="neg">sin maestro</span>'}</div>
       ${c.cbu ? `<div class="mini">CBU ${esc(c.cbu)}</div>` : '<div class="mini neg">sin CBU</div>'}
+      <div class="mini" style="margin-top:6px">
+        ${c.saldo_inicial ? `arranca en ${plata(c.saldo_inicial)}${
+            c.saldo_inicial_fecha ? ' al ' + fecha(c.saldo_inicial_fecha) : ''}
+          + ${plata(c.suma_movimientos)} de movimientos`
+          : `<span class="amb">sin saldo de arranque</span> — el saldo es solo la suma
+             de los ${c.movimientos} movimientos cargados`}
+        <button class="g xs" style="margin-left:6px"
+          onclick="saldoArranque(${c.id},${c.saldo_inicial||0},'${esc(c.saldo_inicial_fecha||'')}')">
+          Corregir</button></div>
       </div>`).join('')
       || '<div class="card"><div class="k">Sin cuentas</div><div class="mini" style="margin-top:6px">Cargá una abajo.</div></div>'}</div>
     <div class="panel" style="margin-top:16px"><div class="panel-h"><b>Cuenta nueva</b>
@@ -1909,6 +1918,27 @@ async function bCuentas(){
         <div style="display:flex;align-items:flex-end"><button onclick="altaCuenta()">Crear</button></div>
       </div></div>
     </div>`);
+}
+
+/* El saldo con el que arranca la cuenta. Lo escribe solo el cargador de
+   extractos —el primer renglón lo dice— pero tiene que poder corregirse: si
+   el primer extracto que entró no es el más viejo, ese arranque no es el real. */
+async function saldoArranque(id, actual, desde){
+  const r = await modal('El saldo con el que arranca la cuenta',
+    `El sistema conoce los movimientos <b>desde el primer extracto que se cargó</b>. Lo que la
+     cuenta ya tenía antes no está en ningún movimiento, y sin este número «saldo» es la suma de
+     lo cargado, no el saldo.<br><br>Normalmente lo pone solo el cargador de extractos, que lo
+     saca del primer renglón. Corregilo si cargaste un extracto que no era el más viejo.`,
+    [{id:'md-si', label:'Saldo al inicio',
+      html:`<input id="md-si" type="number" step="0.01" value="${actual}">`},
+     {id:'md-sf', label:'¿Desde qué día vale?',
+      html:`<input id="md-sf" type="date" value="${desde}">`}], 'Guardar');
+  if (!r) return;
+  try{
+    await post(`/api/c/cuentas/${id}/saldo-inicial`,
+      {saldo_inicial: parseFloat(r['md-si'])||0, fecha: r['md-sf']});
+    toast('Guardado — el saldo se recalcula'); vBancos();
+  }catch(e){ toast(e.message, true); }
 }
 
 async function altaMovimiento(){

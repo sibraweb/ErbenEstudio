@@ -75,6 +75,33 @@ irreversible con nombre y apellido: lo hace la persona, mirando la pantalla.
 El job prepara, el humano ejecuta — la misma regla del preparador de pagos
 (`TESORERIA__DEFINICION.md` §11).
 
+## El resumen del banco viene en PDF
+
+Muchos clientes no tienen otra cosa: el home banking no da CSV, o lo da con
+meses de retraso. `cargar_extracto.py` acepta el PDF igual que un CSV —
+`extracto_pdf.py` lo convierte y sigue el mismo camino de siempre.
+
+```
+py parsers/cargar_extracto.py --alias DEMO --cuenta 1 --archivo resumen.pdf --revisar
+py parsers/cargar_extracto.py --alias DEMO --cuenta 1 --archivo resumen.pdf
+```
+
+Lee **por la posición horizontal de cada número**, no por el orden del texto:
+el volcado plano de un PDF entrega la fecha, después el importe y después el
+concepto, y ahí no hay forma de saber si un número es débito o crédito.
+Confundirlos invierte el signo, que es el peor error posible en un extracto.
+
+Y hay una prueba que no depende de que el parser «parezca» andar: el resumen
+trae el saldo de cada renglón, así que si la lectura está bien la cadena
+`saldo[i] = saldo[i-1] + importe` cierra para las cientos de filas del mes. Si
+no cierra, no carga.
+
+⚠ **El saldo de la cuenta no es la suma de los movimientos.** El sistema los
+conoce desde el primer extracto que se cargó; lo que la cuenta ya tenía antes
+no está en ninguno. Por eso el cargador escribe el **saldo de arranque**, que
+también sale del extracto: el saldo del primer renglón menos su importe. Sin
+eso, en el primer caso real la cuenta mostraba $74M en vez de $189M.
+
 ## Qué falta
 
 - [ ] Que `atp_iibb.py` escriba en la base del estudio (hoy deja XLSX/JSON en Drive)

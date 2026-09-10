@@ -142,6 +142,15 @@ CREATE TABLE cuentas_bancarias (
     cbu         TEXT,
     moneda      TEXT NOT NULL DEFAULT 'ARS',
     alias_banco TEXT,
+    -- ⚠ EL SALDO CON EL QUE ARRANCA LA CUENTA. Los movimientos empiezan el día
+    -- del primer extracto que se cargó, pero la cuenta ya venía con plata
+    -- adentro: sin esto, «saldo» es la SUMA DE LOS MOVIMIENTOS y no el saldo.
+    -- En el primer caso real la diferencia era de $115.100.198,25 — la
+    -- posición de tesorería mostraba menos de la mitad de lo que había.
+    -- Sale del propio extracto: es el saldo del primer renglón menos su
+    -- importe, así que no hay que preguntárselo a nadie.
+    saldo_inicial       REAL NOT NULL DEFAULT 0,
+    saldo_inicial_fecha TEXT,                   -- desde cuándo vale ese saldo
     activa      INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX ix_ctas_cliente ON cuentas_bancarias(cliente_id);

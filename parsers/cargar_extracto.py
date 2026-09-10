@@ -36,6 +36,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 API = "http://localhost:8310"
 
 # Cómo se llama cada cosa según el banco. Se busca por SUBCADENA y sin
@@ -100,6 +102,12 @@ def leer(path):
     path = Path(path)
     if not path.exists():
         raise SystemExit(f"No encuentro el archivo:\n  {path}")
+    if path.suffix.lower() == ".pdf":
+        # El resumen que manda el banco. Muchos clientes no tienen otra cosa:
+        # el home banking no da CSV o lo da tarde. Lee por posición de columna
+        # y la cadena de saldos de más abajo lo verifica igual que a un CSV.
+        import extracto_pdf
+        return extracto_pdf.leer(path)
     if path.suffix.lower() in (".xlsx", ".xls"):
         try:
             import pandas as pd
@@ -196,6 +204,39 @@ def validar_cadena(movs):
     return errores, primero
 
 
+def _saldo_de_arranque(alias, cuenta_id, movs):
+    """El saldo con el que venía la cuenta, sacado del propio extracto.
+
+    ⚠ SIN ESTO EL SALDO DE LA CUENTA MIENTE. Los movimientos arrancan el día
+    del primer extracto que se cargó, pero la cuenta ya tenía plata adentro:
+    «saldo» pasa a ser la suma de lo que entró al sistema, que es otra cosa. En
+    el primer caso real la diferencia fue de $115.100.198,25 sobre una cuenta
+    de 189 millones — la posición mostraba menos de la mitad.
+
+    No hay que preguntárselo a nadie ni buscarlo en otra pantalla: el primer
+    renglón trae su saldo y su importe, y lo que había antes es la resta.
+
+    Se escribe solo cuando la cuenta no lo tenía o cuando este extracto empieza
+    ANTES que el que lo puso. Nunca se pisa un arranque más viejo con uno más
+    nuevo: el más viejo es el que vale."""
+    con_saldo = [m for m in movs if m.get("saldo") is not None]
+    if not con_saldo:
+        return
+    primero = con_saldo[0]
+    apertura = round(primero["saldo"] - primero["importe"], 2)
+    cta = next((c for c in _api(f"/api/c/cuentas?cliente={alias}")
+                if c["id"] == cuenta_id), None)
+    if not cta:
+        return
+    desde = cta.get("saldo_inicial_fecha")
+    if desde and desde <= primero["fecha"]:
+        return
+    _api(f"/api/c/cuentas/{cuenta_id}/saldo-inicial?cliente={alias}",
+         {"saldo_inicial": apertura, "fecha": primero["fecha"]})
+    print(f"  Saldo de arranque de la cuenta: {apertura:,.2f} al {primero['fecha']}"
+          "  (lo dice el primer renglón del extracto)")
+
+
 def _api(ruta, cuerpo=None):
     datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
     req = urllib.request.Request(API + ruta, data=datos,
@@ -273,6 +314,7 @@ def main():
     r = _api(f"/api/c/movimientos?cliente={a.alias}",
              {"cuenta_id": a.cuenta, "movimientos": movs})
     print(f"\n  CARGADO: {r['nuevos']} nuevo(s) · {r['repetidos']} que ya estaban")
+    _saldo_de_arranque(a.alias, a.cuenta, movs)
     if r["repetidos"]:
         print("  (los repetidos no se duplicaron: la llave es huella + ordinal)")
     return 0
