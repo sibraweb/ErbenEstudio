@@ -163,12 +163,13 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
   <button class="g xs" onclick="tema()">◐ Tema</button>
 </div></header>
 
+<div id="cartel-licencia"></div>
 <nav><div class="nav" id="nav"></div></nav>
 <main id="vista"><div id="arranque">Cargando…</div></main>
 <div id="toast"></div>
 
 <script>
-let CLI = null, CLIENTES = [], ACT = [], ENT = [], CTAS = [];
+let CLI = null, CLIENTES = [], ACT = [], ENT = [], CTAS = [], LICENCIA = null;
 
 const MODULOS = [
   ['tesoreria',    'Tesorería'],
@@ -346,7 +347,33 @@ function colorFecha(f){
 }
 
 /* ── el filtro de empresa: manda sobre todos los módulos ── */
+/* ── LA LICENCIA ──
+   Si venció, el sistema queda en SOLO LECTURA: ve todo, imprime y exporta,
+   pero no carga ni corre jobs. Lo que no puede pasar es que alguien apriete
+   Guardar, no pase nada y no sepa por qué — por eso el cartel va arriba de
+   todo y dice qué se puede y qué no. */
+async function verLicencia(){
+  let l;
+  try{ l = await api('/api/licencia'); }catch(e){ return; }
+  LICENCIA = l;
+  const c = $('#cartel-licencia');
+  if (!c || l.estado === 'sin_control' || l.estado === 'al_dia'){
+    if (c) c.innerHTML = ''; return;
+  }
+  const grave = !l.puede_escribir;
+  c.innerHTML = `<div style="padding:10px 18px;border-bottom:1px solid var(--bor);
+    background:${grave ? 'rgba(220,60,60,.10)' : 'rgba(220,160,40,.10)'}">
+    <b>${esc(l.titulo)}</b> ${esc(l.detalle)}
+    ${l.estudio ? `<span class="mini"> · ${esc(l.estudio)}${
+      l.vence ? ' · vencía el ' + fecha(l.vence) : ''}</span>` : ''}
+  </div>`;
+}
+
 async function arrancar(){
+  // ⚠ Se espera: si la lectura queda en vuelo mientras arranca el cliente, el
+  // guardacarreras de api() la descarta y el cartel no aparece nunca — que es
+  // justo la pantalla en la que hay que explicar por qué no se puede guardar.
+  await verLicencia();
   try{ CLIENTES = await api('/api/clientes'); }
   catch(e){ return sinEquipoLocal(e); }
   if (!CLIENTES.length){

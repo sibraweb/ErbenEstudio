@@ -34,6 +34,7 @@ from flask_cors import CORS
 RAIZ = Path(__file__).parent.parent
 SISTEMA = RAIZ / "sistema"
 sys.path.insert(0, str(RAIZ))
+import licencia  # noqa: E402
 import respaldo as _respaldo  # noqa: E402
 import rutas  # noqa: E402
 
@@ -56,6 +57,44 @@ DIAS_FACTURA = 10
 
 app = Flask(__name__)
 CORS(app)
+
+
+# ══ LICENCIA ════════════════════════════════════════════════════════════════
+# El sistema corre en la máquina del estudio: no hay forma de apagarlo desde
+# afuera, solo de que se niegue a trabajar. Y «negarse» es SOLO LECTURA, nunca
+# pantalla negra: ve todo, imprime y exporta —son libros que está obligado a
+# conservar— pero no carga, no edita y no corre jobs.
+_LIC = {"cuando": 0, "estado": None}
+
+
+def _licencia(refrescar=False):
+    """El estado, cacheado un minuto: verificar la firma en cada request sería
+    trabajo al pedo y el archivo no cambia solo."""
+    ahora = time.time()
+    if refrescar or _LIC["estado"] is None or ahora - _LIC["cuando"] > 60:
+        _LIC["estado"] = licencia.estado()
+        _LIC["cuando"] = ahora
+    return _LIC["estado"]
+
+
+@app.before_request
+def _cortar_si_vencio():
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+    est = _licencia()
+    if est["puede_escribir"]:
+        return None
+    return jsonify({"error": est["titulo"] + " — " + est["detalle"],
+                    "licencia": est}), 403
+
+
+@app.get("/api/licencia")
+def api_licencia():
+    """Para el cartel de la pantalla. Es público a propósito: sin esto, una
+    instalación vencida no sabría explicar por qué no la deja guardar."""
+    return jsonify(_licencia(refrescar=request.args.get("refrescar") == "1"))
 
 
 @app.after_request
@@ -5452,7 +5491,11 @@ if __name__ == "__main__":
     _r = _respaldo.copiar(motivo="al arrancar")
     print("  respaldo: " + (f"{Path(_r['archivo']).name} ({_r['mb']} MB)"
                             if _r.get("ok") else "⚠ " + _r.get("error", "")))
-    print("ERBEN ESTUDIO — http://localhost:8310")
-    app.run(host="127.0.0.1", port=8310, debug=False)
+    # El puerto se puede cambiar (ERBEN_PUERTO). Hace falta para poder levantar
+    # una segunda instancia y probarla sin tocar la del estudio, y el día que
+    # un estudio con varios empleados ponga un solo agente para todos.
+    _puerto = int(os.environ.get("ERBEN_PUERTO") or 8310)
+    print(f"ERBEN ESTUDIO — http://localhost:{_puerto}")
+    app.run(host="127.0.0.1", port=_puerto, debug=False)
 
 

@@ -170,6 +170,78 @@ la base tiene un solo punto de entrada.
    pantalla traiga los datos. Si el navegador bloquea el llamado a localhost,
    ver la nota de PNA de arriba.
 
+## Cobrarlo: la licencia y los parsers firmados
+
+El sistema corre en la máquina del estudio, con sus datos y sus claves. **No
+hay forma de apagarlo desde afuera** — solo de que el programa se niegue a
+trabajar. Eso son dos piezas.
+
+### 1 · El permiso, con fecha
+
+`licencia.py` lee un JSON firmado con nuestra clave privada (Ed25519). La
+pública va adentro del código; **mientras esté vacía, el sistema no le pide
+permiso a nadie** — que es como corre hoy el estudio que lo desarrolla.
+
+| estado | qué pasa |
+|---|---|
+| `al_dia` | todo normal |
+| `gracia` | venció hace poco: trabaja igual, avisa y hace la cuenta regresiva |
+| `vencida` | **solo lectura** |
+| `sin_licencia` · `adulterada` | **solo lectura** |
+
+**Tiene fecha, no es una pregunta en vivo.** Si cada arranque tuviera que
+consultarnos, un corte de internet un 20 a las 11 de la noche dejaría a un
+estudio sin poder presentar, y esa llamada la atendemos nosotros.
+
+**Y «solo lectura» no es pantalla negra**: ve todo, imprime y exporta. Son
+libros que el estudio está obligado a conservar; quedárselos de rehén, además
+de feo, es un problema legal. Lo que se corta es poder seguir trabajando.
+
+```
+py herramientas/firmar.py --generar-clave          una sola vez
+py herramientas/firmar.py --licencia --estudio "Estudio Pérez" \
+    --email perez@gmail.com --hasta 2026-10-10
+```
+
+La licencia emitida se copia a `C:\SIBRA\estudio\licencia.json` en la máquina
+del estudio. Renovar = emitir otra con la misma `--instalacion` y pisarla.
+
+⚠ **La clave privada no entra al repo ni al Drive.** Vive en
+`C:\SIBRA\estudio\firma.key`. Si se pierde no se pueden emitir más licencias;
+si se filtra, cualquiera puede emitirlas — y, peor, servirle a un estudio un
+paquete de parsers propio.
+
+### 2 · Los parsers, que es el candado de verdad
+
+El chequeo de licencia es un candado de vidrio: esto es Python en la máquina
+del otro y quien sepa lo borra. Lo que retiene es la pieza que **no pueden
+reproducir**: los jobs que saben entrar a ARCA y a los portales de rentas.
+
+`paquete.py` los baja firmados y solo con el permiso vigente. Se verifica la
+firma del manifiesto, el hash del zip y el de cada archivo; **un paquete que no
+verifica no se ejecuta**, aunque eso deje al estudio sin correr los jobs hoy —
+ahí adentro van los scripts que se loguean en ARCA con las claves del
+contribuyente, y uno adulterado es una fuga de credenciales fiscales.
+
+Sin internet se sigue con el último paquete verificado. Sin permiso, no.
+
+```
+py herramientas/firmar.py --paquete --version 2026.09.10
+```
+
+Se suben `manifiesto.json` y el `.zip` a la misma carpeta de la web, y el
+agente apunta ahí con `ERBEN_URL_PAQUETE`.
+
+**Baja código, no sube nada.** El pedido lleva el número de instalación y la
+versión que ya tiene; nada del estudio ni de sus clientes. El argumento de
+venta es que la contabilidad no sale de la máquina: un solo campo de más lo
+convierte en mentira.
+
+⚠ **El repo es público y los parsers ya están adentro.** Sacarlos ahora no los
+despublica: la historia de git queda y hoy cualquiera clona el árbol. Esto
+sirve de acá en adelante — las versiones nuevas se entregan firmadas, y las
+viejas envejecen solas cuando los portales cambian, que es lo que pasa siempre.
+
 ## Drive del cliente — diseño, todavía sin construir
 
 El Drive es **el archivo y el respaldo**, no la base operativa. La base es el

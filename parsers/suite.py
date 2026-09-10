@@ -30,8 +30,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import clientes  # noqa: E402
 import credenciales  # noqa: E402
+import licencia  # noqa: E402
+import paquete  # noqa: E402
 
 AQUI = Path(__file__).parent
 # Los jobs heredados de nuestro sistema (mismo disco, por ahora).
@@ -138,8 +141,22 @@ RUBROS = {
 }
 
 
+_CARPETA = {}
+
+
+def carpeta_propia():
+    """De dónde salen los jobs propios: el paquete firmado si hay entrega
+    remota, o los que vinieron con la instalación.
+
+    Se resuelve UNA vez por corrida: `asegurar()` sale a la red y el catálogo
+    pregunta por cada job."""
+    if "propia" not in _CARPETA:
+        _CARPETA["propia"] = paquete.carpeta_de_jobs(AQUI)
+    return _CARPETA["propia"]
+
+
 def ruta_de(job):
-    return (AQUI if job["propio"] else TOOLS_SIBRA) / job["archivo"]
+    return (carpeta_propia() if job["propio"] else TOOLS_SIBRA) / job["archivo"]
 
 
 def catalogo():
@@ -165,6 +182,11 @@ def catalogo():
 
 
 def correr(clave, args=None):
+    # ⚠ Los jobs son lo que NO se puede reproducir: saben entrar a ARCA y a los
+    # portales de rentas. Sin permiso vigente no corren — ver `paquete.py`.
+    est = licencia.estado()
+    if not est["puede_escribir"]:
+        return 3, f"{est['titulo']}\n  {est['detalle']}"
     """Lanza un job y devuelve (codigo, salida). Los atendidos abren su ventana
     y esperan a la persona: por eso no hay timeout corto."""
     j = JOBS.get(clave)
