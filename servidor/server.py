@@ -369,6 +369,14 @@ def _migrar(con):
         con.execute("ALTER TABLE cuentas_bancarias ADD COLUMN saldo_inicial_fecha TEXT")
         con.commit()
 
+    # ── la provincia del tributo bancario ──
+    cj = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
+    if "tributo" in cj and "jurisdiccion" not in cj:
+        print("  migrando: provincia del tributo bancario…")
+        con.execute("ALTER TABLE movimientos_banco ADD COLUMN jurisdiccion TEXT")
+        con.execute("ALTER TABLE reglas_clasificacion ADD COLUMN jurisdiccion TEXT")
+        con.commit()
+
     # ── el tributo del movimiento, tipado ──
     cm = {f[1] for f in con.execute("PRAGMA table_info(movimientos_banco)")}
     if "tributo" not in cm:
@@ -891,12 +899,12 @@ def _aplicar_reglas(con, cid, solo=None):
     cambiados = 0
     for r in con.execute(q + " ORDER BY prioridad DESC, id DESC", args).fetchall():
         cur = con.execute(
-            "UPDATE movimientos_banco SET rango=?, subrango=?, tributo=? "
+            "UPDATE movimientos_banco SET rango=?, subrango=?, tributo=?, jurisdiccion=? "
             "WHERE cliente_id=? AND LOWER(COALESCE(descripcion,'')) LIKE '%'||LOWER(?)||'%' "
             "AND (COALESCE(rango,'') <> ? OR COALESCE(subrango,'') <> ? "
-            "     OR COALESCE(tributo,'') <> ?)",
-            (r["rango"], r["subrango"], r["tributo"], cid, r["patron"],
-             r["rango"], r["subrango"], r["tributo"] or ""))
+            "     OR COALESCE(tributo,'') <> ? OR COALESCE(jurisdiccion,'') <> ?)",
+            (r["rango"], r["subrango"], r["tributo"], r["jurisdiccion"], cid, r["patron"],
+             r["rango"], r["subrango"], r["tributo"] or "", r["jurisdiccion"] or ""))
         cambiados += cur.rowcount
     return cambiados
 
@@ -946,8 +954,9 @@ def api_regla_alta():
         return jsonify({"error": f"tributo desconocido: {trib}"}), 400
     cur = con.execute(
         "INSERT INTO reglas_clasificacion (cliente_id, patron, rango, subrango, tributo, "
-        " prioridad, activa, nota) VALUES (?,?,?,?,?,?,1,?)",
+        " jurisdiccion, prioridad, activa, nota) VALUES (?,?,?,?,?,?,?,1,?)",
         (cli["id"], b["patron"].strip(), b["rango"].strip(), b["subrango"].strip(), trib,
+         (b.get("jurisdiccion") or "").strip() or None,
          int(b.get("prioridad") or 100), b.get("nota")))
     rid = cur.lastrowid
     cambiados = _aplicar_reglas(con, cli["id"], solo=rid)
@@ -1036,8 +1045,10 @@ def api_clasificar_uno(mid):
     if trib and trib not in TRIBUTOS_VALIDOS:
         con.close()
         return jsonify({"error": f"tributo desconocido: {trib}"}), 400
-    con.execute("UPDATE movimientos_banco SET rango=?, subrango=?, tributo=? WHERE id=?",
-                (b.get("rango"), b.get("subrango"), trib, mid))
+    con.execute("UPDATE movimientos_banco SET rango=?, subrango=?, tributo=?, "
+                "jurisdiccion=? WHERE id=?",
+                (b.get("rango"), b.get("subrango"), trib,
+                 (b.get("jurisdiccion") or "").strip() or None, mid))
     con.commit()
     con.close()
     return jsonify({"ok": True})
@@ -1062,7 +1073,7 @@ def api_bancos_tributos():
     marcas = ",".join("?" * len(todos))
     tipados = filas(con.execute(
         "SELECT m.id, m.fecha, m.descripcion, m.importe, m.tributo, m.subrango, "
-        "  c.banco, c.numero FROM movimientos_banco m "
+        "  m.jurisdiccion, c.banco, c.numero FROM movimientos_banco m "
         "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
         f"WHERE m.cliente_id=? AND m.tributo IN ({marcas}) ORDER BY m.fecha DESC",
         (cli["id"], *todos)))
@@ -1080,13 +1091,32 @@ def api_bancos_tributos():
         return round(sum(abs(_n(r["importe"])) for r in rs
                          if (r.get(campo) if campo == "parece" else r[campo]) in tipos), 2)
 
+    # ── CON QUÉ SE DECIDE LA PROVINCIA (Juan, 10/09) ────────────────────────
+    # «cuando es SIRCREB vamos a tener que ver cómo le damos provincia en el
+    # débito, o en la provincia a la que se facturó». Las dos puertas están:
+    # se puede escribir en el débito, y para el que quiera mirar lo facturado,
+    # acá va cómo se repartieron las ventas de cada mes. El sistema NO reparte
+    # solo: eso es criterio del contador y firma él.
+    ventas = filas(con.execute(
+        "SELECT substr(fecha,1,7) AS mes, COALESCE(iibb_jurisdiccion,'(sin actividad)') "
+        "  AS jurisdiccion, ROUND(SUM(neto),2) AS neto, COUNT(*) AS facturas "
+        "FROM facturas WHERE cliente_id=? AND mov='venta' GROUP BY 1,2 ORDER BY 1 DESC, 3 DESC",
+        (cli["id"],)))
+    juris = _jurisdicciones(con, cli["cuit"])
+    # Con una sola jurisdicción (o ninguna todavía) no hay nada que atribuir:
+    # todo es de esa. Mostrarlo como hueco sería inventar un problema.
+    sin_prov = 0.0 if len(juris) <= 1 else _banco_sin_atribuir(con, cli["id"], CREDITO_IIBB)
     con.close()
     return jsonify({
         "tipados": tipados, "propuestos": propuestos,
         "iva": {"computa": suma(tipados, CREDITO_IVA),
                 "propuesto": suma(propuestos, CREDITO_IVA, "parece")},
         "iibb": {"computa": suma(tipados, CREDITO_IIBB),
-                 "propuesto": suma(propuestos, CREDITO_IIBB, "parece")},
+                 "propuesto": suma(propuestos, CREDITO_IIBB, "parece"),
+                 "sin_provincia": sin_prov},
+        "jurisdicciones": juris,
+        "una_sola_jurisdiccion": len(juris) <= 1,
+        "ventas_por_jurisdiccion": ventas,
         "nota": "Lo tipado ya está descontado en la posición de IVA y en la DJ "
                 "de IIBB. Lo propuesto todavía no computa en ninguna.",
     })
@@ -1108,6 +1138,8 @@ def api_bancos_tributos_tipar():
     if trib and trib not in TRIBUTOS_VALIDOS:
         con.close()
         return jsonify({"error": f"tributo desconocido: {trib}"}), 400
+    # La provincia solo tiene sentido en IIBB; en IVA se ignora sin protestar.
+    juris = (b.get("jurisdiccion") or "").strip() or None
     ids = [int(x) for x in (b.get("movimientos") or [])]
     # `parece`: en vez de un tributo fijo, a cada uno el suyo. Es lo que hace
     # el botón «confirmar todas» cuando hay percepciones de IVA y de IIBB
@@ -1127,7 +1159,8 @@ def api_bancos_tributos_tipar():
             t = _que_tributo_parece(m["descripcion"]) if m else None
             if not t:
                 continue
-        con.execute("UPDATE movimientos_banco SET tributo=? WHERE id=?", (t, mid))
+        con.execute("UPDATE movimientos_banco SET tributo=?, jurisdiccion=? WHERE id=?",
+                    (t, juris if (t or "").endswith("iibb") else None, mid))
         n += 1
     con.commit()
     con.close()
@@ -3552,6 +3585,12 @@ TRIBUTOS = [
     ("retencion_iibb",       "Retención IIBB",        "retencion",  "iibb"),
     ("retencion_ganancias",  "Retención Ganancias",   "retencion",  "ganancias"),
     ("retencion_suss",       "Retención SUSS",        "retencion",  "suss"),
+    # ⚠ EL BANCO NO FACTURA (Juan, 10/09). Ese IVA no va a aparecer nunca en
+    # Mis Comprobantes: se toma DIRECTO en la DJ y se anota a mano en ARCA al
+    # presentarla, igual que el SIRCREB y lo de rentas de cada provincia.
+    # Acá se lo había dejado afuera "para no contarlo dos veces" — pero no hay
+    # dos veces: hay una sola, y era esta.
+    ("iva_banco",            "IVA del resumen bancario", "credito", "iva"),
     ("tasa_municipal",       "Tasa municipal",        "tributo",    None),
     ("impuesto_interno",     "Impuesto interno",      "tributo",    None),
     ("sin_clasificar",       "Sin clasificar",        "tributo",    None),
@@ -3559,7 +3598,7 @@ TRIBUTOS = [
 ]
 TRIBUTOS_VALIDOS = {t[0] for t in TRIBUTOS}
 # Los que son crédito computable en cada DJ.
-CREDITO_IVA = ("percepcion_iva", "retencion_iva")
+CREDITO_IVA = ("percepcion_iva", "retencion_iva", "iva_banco")
 CREDITO_IIBB = ("percepcion_iibb", "retencion_iibb")
 
 
@@ -3575,6 +3614,11 @@ CREDITO_IIBB = ("percepcion_iibb", "retencion_iibb")
 # renglón que traiga esas letras se restaría sin que nadie lo haya mirado.
 SUGERENCIAS_BANCO = [
     ("percepcion_iva",  ["%perc%iva%", "%perc%i.v.a%"]),
+    # El IVA de las comisiones del banco. Va DESPUÉS de percepción y retención
+    # a propósito: los patrones se prueban en orden y «%iva%» solo se las
+    # comería a las dos.
+    ("iva_banco",       ["%iva%deb%fisc%", "%iva%comis%", "%iva%s/com%",
+                         "%iva%serv%", "%iva%credito%fiscal%"]),
     ("retencion_iva",   ["%ret%iva%", "%ret%i.v.a%"]),
     ("percepcion_iibb", ["%perc%iibb%", "%perc%ing%brut%", "%perc%i.b.%"]),
     # SIRCREB es el régimen que recauda IIBB sobre lo que se ACREDITA en la
@@ -3590,17 +3634,91 @@ SUGERENCIAS_BANCO = [
 ]
 
 
-def _tributos_banco(con, cid, tipos, desde=None, hasta=None):
-    """{mes: monto} de lo que el banco debitó por esos tributos, ya tipado."""
+def _jurisdicciones(con, cuit):
+    """Las provincias en las que el cliente está inscripto, según el padrón."""
+    return [r["jurisdiccion"] for r in con.execute(
+        "SELECT DISTINCT jurisdiccion FROM maestro_actividades WHERE cuit=? "
+        "AND jurisdiccion IS NOT NULL ORDER BY 1", (cuit,))]
+
+
+def _reparto_por_ventas(con, cid, jur):
+    """{mes: qué parte de las ventas de ese mes fue a `jur`}, entre 0 y 1.
+
+    ⚠ LA PROVINCIA NO SE PREGUNTA DE NUEVO (Juan, 10/09: *«eso ya lo tenemos
+    resuelto en el módulo de facturas»*). El banco recauda sobre lo que se
+    acredita en la cuenta y no dice de qué jurisdicción es, pero el sistema ya
+    sabe a dónde se facturó ese mes: cada venta lleva su actividad y su
+    jurisdicción desde Facturas → Actividades·IIBB.
+
+    Con una sola provincia el reparto da 1 y no hay nada que decidir, que es el
+    caso de casi todos. Con convenio multilateral se reparte en la proporción
+    de lo facturado — la misma base con la que se arma la DJ."""
+    filas_mes = {}
+    for r in con.execute(
+            "SELECT substr(fecha,1,7) AS mes, iibb_jurisdiccion AS j, "
+            "  ROUND(SUM(neto),2) AS neto FROM facturas "
+            "WHERE cliente_id=? AND mov='venta' GROUP BY 1,2", (cid,)):
+        m = filas_mes.setdefault(r["mes"], {"total": 0.0, "propio": 0.0})
+        m["total"] += _n(r["neto"])
+        if r["j"] == jur:
+            m["propio"] += _n(r["neto"])
+    return {mes: (v["propio"] / v["total"] if v["total"] else 0.0)
+            for mes, v in filas_mes.items()}
+
+
+def _tributos_banco(con, cid, tipos, desde=None, hasta=None, jur=None, unica=True):
+    """{mes: monto} de lo que el banco debitó por esos tributos, ya tipado.
+
+    Si `jur` viene, lo que el movimiento diga manda; y lo que no diga nada se
+    atribuye por lo FACTURADO en ese mes (ver `_reparto_por_ventas`). `unica`
+    es el atajo del caso normal: una sola jurisdicción inscripta, todo es de
+    ella y no hace falta mirar las ventas."""
     marcas = ",".join("?" * len(tipos))
-    q = ("SELECT substr(fecha,1,7) AS mes, ROUND(SUM(-importe),2) AS monto "
-         "FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
-         f"AND tributo IN ({marcas})")
+    def traer(extra, mas_args):
+        q = ("SELECT substr(fecha,1,7) AS mes, ROUND(SUM(-importe),2) AS monto "
+             "FROM movimientos_banco WHERE cliente_id=? AND importe < 0 "
+             f"AND tributo IN ({marcas}) " + extra)
+        args = [cid, *tipos, *mas_args]
+        if desde and hasta:
+            q += " AND fecha BETWEEN ? AND ?"
+            args += [desde, hasta]
+        return {r["mes"]: _n(r["monto"]) for r in con.execute(q + " GROUP BY 1", args)}
+
+    if not jur or unica:
+        return traer("", [])
+    propios = traer("AND jurisdiccion=?", [jur])
+    sueltos = traer("AND COALESCE(jurisdiccion,'')=''", [])
+    reparto = _reparto_por_ventas(con, cid, jur)
+    for mes, monto in sueltos.items():
+        parte = round(monto * reparto.get(mes, 0.0), 2)
+        if parte:
+            propios[mes] = round(propios.get(mes, 0.0) + parte, 2)
+    return propios
+
+
+def _banco_sin_atribuir(con, cid, tipos, desde=None, hasta=None):
+    """Lo de IIBB que no se pudo mandar a ninguna provincia.
+
+    Pasa cuando el mes tiene recaudación bancaria y NINGUNA venta con
+    jurisdicción: no hay contra qué repartirlo. Se informa en vez de mandarlo
+    a la provincia que toque liquidar, que sería inventar."""
+    marcas = ",".join("?" * len(tipos))
+    q = ("SELECT substr(m.fecha,1,7) AS mes, ROUND(SUM(-m.importe),2) AS monto "
+         "FROM movimientos_banco m WHERE m.cliente_id=? AND m.importe < 0 "
+         f"AND m.tributo IN ({marcas}) AND COALESCE(m.jurisdiccion,'')='' ")
     args = [cid, *tipos]
     if desde and hasta:
-        q += " AND fecha BETWEEN ? AND ?"
+        q += " AND m.fecha BETWEEN ? AND ?"
         args += [desde, hasta]
-    return {r["mes"]: _n(r["monto"]) for r in con.execute(q + " GROUP BY 1", args)}
+    total = 0.0
+    for r in con.execute(q + " GROUP BY 1", args):
+        hay = con.execute(
+            "SELECT COUNT(*) FROM facturas WHERE cliente_id=? AND mov='venta' "
+            "AND iibb_jurisdiccion IS NOT NULL AND substr(fecha,1,7)=?",
+            (cid, r["mes"])).fetchone()[0]
+        if not hay:
+            total += _n(r["monto"])
+    return round(total, 2)
 
 
 def _sql_sugeridos(tipos):
@@ -4068,8 +4186,16 @@ def _dj_iibb(con, cli, periodo, jur=None):
     # LO QUE COBRÓ EL BANCO. En IIBB pesa más que en IVA: el SIRCREB recauda
     # sobre TODO lo que se acredita en la cuenta, mes a mes, y no aparece en
     # ningún comprobante. Una DJ que lo ignore paga dos veces el mismo impuesto.
+    # ⚠ CADA PROVINCIA SU DJ. Con una sola jurisdicción inscripta todo es de
+    # ella. Con convenio multilateral, lo que el banco recaudó se atribuye por
+    # lo FACTURADO en el mes — el dato ya está en Facturas, no se pregunta de
+    # nuevo.
+    juris = _jurisdicciones(con, cli["cuit"])
+    una_sola = len(juris) <= 1
     perc_banco = round(sum(_tributos_banco(
-        con, cli["id"], CREDITO_IIBB, desde, hasta).values()), 2)
+        con, cli["id"], CREDITO_IIBB, desde, hasta, jur=jur, unica=una_sola).values()), 2)
+    banco_sin_atribuir = 0.0 if una_sola else _banco_sin_atribuir(
+        con, cli["id"], CREDITO_IIBB, desde, hasta)
     banco_sin_tipar = round(sum(_sugeridos_banco(
         con, cli["id"], CREDITO_IIBB, desde, hasta).values()), 2)
     # Lo que nadie clasificó: no se descuenta —no se sabe de qué es— pero se
@@ -4115,6 +4241,8 @@ def _dj_iibb(con, cli, periodo, jur=None):
         "impuesto_determinado": determinado,
         "percepciones_iibb": perc_iibb, "retenciones_iibb": ret_iibb,
         "deducciones_banco": perc_banco, "banco_sin_tipar": banco_sin_tipar,
+        "banco_sin_atribuir": banco_sin_atribuir,
+        "jurisdicciones": juris,
         "deducciones": deducciones, "deducciones_detalle": detalle_ded,
         "deducciones_fuente": fuente_ded,
         "saldo_a_favor_anterior": a_favor,

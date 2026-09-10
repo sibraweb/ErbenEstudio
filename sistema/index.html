@@ -1288,7 +1288,9 @@ async function declararInicial(){
    ese crédito se perdía, y cualquier renglón con esas letras se restaba sin que
    nadie lo mirara. Ahora computa lo confirmado, y lo que se parece se propone. */
 const TRIB_NOMBRE = {percepcion_iva:'Percepción IVA', retencion_iva:'Retención IVA',
-  percepcion_iibb:'Percepción IIBB', retencion_iibb:'Retención IIBB'};
+  percepcion_iibb:'Percepción IIBB', retencion_iibb:'Retención IIBB',
+  iva_banco:'IVA del resumen bancario'};
+const ES_IIBB = t => (t||'').endsWith('iibb');
 let banSel = new Set();
 
 async function fBanco(){
@@ -1296,10 +1298,11 @@ async function fBanco(){
   const opciones = Object.entries(TRIB_NOMBRE).map(([k,v]) =>
     `<option value="${k}">${v}</option>`).join('');
   panelF(`
-    <div class="aviso">Lo que el <b>banco</b> te cobró de IVA y de Ingresos Brutos. No está en
-      ninguna factura —se debita de la cuenta— pero es crédito igual: <b>se descuenta de la DJ
-      de su impuesto</b>.<br>Lo confirmado ya computa. Lo que solo <i>se parece</i> no se resta
-      hasta que alguien diga de qué es: restar por parecido es restar sin mirar.</div>
+    <div class="aviso">Lo que el <b>banco</b> te cobró de IVA y de Ingresos Brutos.
+      <b>El banco no factura</b>: esto no va a aparecer nunca en Mis Comprobantes, se toma
+      directo en la DJ y se anota a mano en ARCA al presentarla — igual que el SIRCREB y lo de
+      rentas de cada provincia.<br>Lo confirmado ya computa. Lo que solo <i>se parece</i> no se
+      resta hasta que alguien diga de qué es: restar por parecido es restar sin mirar.</div>
 
     <div class="grid">
       <div class="card"><div class="k">IVA · ya computa</div>
@@ -1312,7 +1315,19 @@ async function fBanco(){
         <div class="mini">descontado en la DJ de IIBB</div></div>
       <div class="card"><div class="k">IIBB · sin confirmar</div>
         <div class="v sm ${d.iibb.propuesto?'amb':''}">${plata(d.iibb.propuesto)}</div></div>
+      ${d.iibb.sin_provincia > 0.01 ? `<div class="card"><div class="k">IIBB · sin atribuir</div>
+        <div class="v sm neg">${plata(d.iibb.sin_provincia)}</div>
+        <div class="mini">meses sin ventas contra qué repartir</div></div>` : ''}
     </div>
+
+    ${!d.una_sola_jurisdiccion ? `<div class="aviso" style="margin-top:16px">
+      <b>${esc(CLI.alias)} liquida en ${d.jurisdicciones.length} provincias</b>
+      (${d.jurisdicciones.map(j => esc(j)).join(' · ')}). El banco recauda sobre lo que se
+      acredita en la cuenta y no dice de cuál es, así que <b>se atribuye por lo facturado en el
+      mes</b> — cada venta ya lleva su jurisdicción desde
+      <a href="#" onclick="fTab='act';vFacturas();return false">Facturas → Actividades·IIBB</a>,
+      no hay que decidirlo dos veces. Si un débito va sí o sí a una provincia, se le escribe
+      abajo y esa manda.</div>` : ''}
 
     ${d.propuestos.length ? `<div class="panel" style="margin-top:16px">
       <div class="panel-h"><b>Débitos que parecen percepciones — todavía no computan</b>
@@ -1323,6 +1338,12 @@ async function fBanco(){
       <div class="panel-b"><div class="f">
         <div class="full"><label>O tildá las que quieras y decí de qué son</label>
           <select id="ban-trib">${opciones}<option value="">— no es un tributo —</option></select></div>
+        <div><label>Forzar provincia (opcional, solo IIBB)</label>
+          <input id="ban-jur" list="dl-juris" placeholder="${
+            d.una_sola_jurisdiccion ? 'no hace falta: hay una sola'
+              : 'vacío = se reparte por lo facturado'}">
+          <datalist id="dl-juris">${d.jurisdicciones.map(j =>
+            `<option value="${esc(j)}">`).join('')}</datalist></div>
         <div style="display:flex;align-items:flex-end">
           <button class="g" onclick="tiparTildados()">Aplicar a las tildadas
             (<span id="ban-cuenta">${banSel.size}</span>)</button></div>
@@ -1342,14 +1363,32 @@ async function fBanco(){
 
     <div class="panel"><div class="panel-h"><b>Confirmados — estos ya se descuentan</b>
       <span class="mini">${d.tipados.length} movimiento(s)</span></div>
-      ${d.tipados.length ? tabla(['Fecha','Banco','Concepto del extracto','Importe','Va contra',''],
+      ${d.tipados.length ? tabla(['Fecha','Banco','Concepto del extracto','Importe','Va contra','Provincia',''],
         d.tipados.map(p => [fecha(p.fecha), `${esc(p.banco||'')} ${esc(p.numero||'')}`,
           esc(p.descripcion||''), {n:`<span class="neg">${plata(Math.abs(p.importe))}</span>`},
           `<b>${esc(TRIB_NOMBRE[p.tributo]||p.tributo)}</b>`,
+          !ES_IIBB(p.tributo) ? '<span class="mini">—</span>'
+            : (p.jurisdiccion ? `<b>${esc(p.jurisdiccion)}</b>`
+               : (d.una_sola_jurisdiccion
+                  ? `<span class="mini">${d.jurisdicciones[0]
+                       ? esc(d.jurisdicciones[0]) : 'falta el padrón de actividades'}</span>`
+                  : '<span class="mini">según lo facturado</span>')),
           `<button class="g xs" onclick="destipar(${p.id})">Sacarlo</button>`]))
         : '<div class="vacio">Todavía no se confirmó ninguno.</div>'}
       <div class="panel-b"><div class="mini">${esc(d.nota)}</div></div>
-    </div>`);
+    </div>
+
+    ${d.ventas_por_jurisdiccion.length && !d.una_sola_jurisdiccion ? `<div class="panel">
+      <div class="panel-h"><b>Lo facturado por provincia, mes a mes</b>
+        <span class="mini">para decidir de dónde es lo que recaudó el banco</span></div>
+      <div class="panel-b"><div class="mini">De acá sale el reparto: lo que el banco recaudó
+        en un mes se descuenta en cada provincia en la misma proporción en que se facturó.
+        Un mes sin ventas con jurisdicción no tiene contra qué repartirse y queda
+        <b>sin atribuir</b>.</div></div>
+      ${tabla(['Mes','Provincia','Neto facturado','Comprobantes'],
+        d.ventas_por_jurisdiccion.map(v => [esc(v.mes), esc(v.jurisdiccion),
+          {n:plata(v.neto)}, v.facturas]))}
+    </div>` : ''}`);
 }
 
 function banTildar(id){
@@ -1361,7 +1400,8 @@ async function tiparTildados(){
   if (!banSel.size) return toast('No tildaste ninguno', true);
   const t = val('ban-trib');
   try{
-    const r = await post('/api/c/bancos/tributos', {movimientos:[...banSel], tributo:t});
+    const r = await post('/api/c/bancos/tributos',
+      {movimientos:[...banSel], tributo:t, jurisdiccion: val('ban-jur')});
     toast(`${r.tipados} movimiento(s) — las DJ se recalculan`);
     banSel.clear(); fBanco();
   }catch(e){ toast(e.message, true); }
@@ -1483,6 +1523,12 @@ async function vIIBB(){
               : '<b>de nuestros comprobantes</b>: todavía no se cargó el relevamiento del portal, así que pueden faltar'}</div>
           ${tabla(['Concepto','Importe'], Object.entries(d.deducciones_detalle).map(([k,v]) =>
             [esc(k.replace(/_/g,' ')), {n:plata(v)}]))}</div>` : ''}
+        ${d.banco_sin_atribuir > 0.01 ? `<div class="aviso" style="margin-top:14px;border-left-color:var(--bad)">
+          <b>${plata(d.banco_sin_atribuir)} que recaudó el banco no se pudo atribuir.</b>
+          Son meses con recaudación bancaria y <b>ninguna venta con jurisdicción</b>: no hay
+          contra qué repartirla, y mandarla a la provincia que toque liquidar sería inventar.
+          Se arregla asignando actividad a esas ventas en
+          <a href="#facturas">Facturas → Actividades·IIBB</a>.</div>` : ''}
         ${d.banco_sin_tipar > 0.01 ? `<div class="aviso" style="margin-top:14px;border-left-color:var(--warn)">
           <b>${plata(d.banco_sin_tipar)} de débitos del banco parecen IIBB y no se están
           descontando.</b> El SIRCREB recauda sobre todo lo que se acredita en la cuenta y no
@@ -1805,6 +1851,8 @@ async function bReglas(){
         <div><label>Bloque</label><select id="nr-rango">${
           d.rangos.map(x => `<option>${esc(x)}</option>`).join('')}</select></div>
         <div><label>Nombre a mostrar</label><input id="nr-sub" placeholder="Servicios · Agua"></div>
+        <div><label>Forzar provincia (si es de IIBB)</label>
+          <input id="nr-jur" placeholder="vacío = por lo facturado"></div>
         <div><label>¿Es un tributo?</label><select id="nr-trib"><option value=''>— no es un tributo —</option>${Object.entries(TRIB_NOMBRE).map(([k,v]) => `<option value="${k}">${v}</option>`).join('')}</select>
           <div class="mini">si lo es, se descuenta de esa DJ</div></div>
         <div><label>Prioridad</label><input id="nr-prio" type="number" value="100">
@@ -1822,7 +1870,7 @@ async function bReglas(){
 async function altaRegla(){
   try{ const r = await post('/api/c/clasificacion/reglas', {patron:val('nr-patron'),
       rango:val('nr-rango'), subrango:val('nr-sub'), tributo:val('nr-trib'),
-      prioridad:num('nr-prio')});
+      jurisdiccion:val('nr-jur'), prioridad:num('nr-prio')});
     toast(`Regla creada — clasificó ${r.clasificados} movimiento(s)`); bReglas();
   }catch(e){ toast(e.message, true); }
 }

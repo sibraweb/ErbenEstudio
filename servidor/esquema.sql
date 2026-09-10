@@ -179,6 +179,11 @@ CREATE TABLE movimientos_banco (
     -- de IIBB: si el único dato fuera «Percepción IVA» escrito a mano, un
     -- «PERC.I.V.A.» de otro banco no computaría y nadie lo notaría.
     tributo      TEXT,                             -- percepcion_iva | retencion_iibb | …
+    -- ⚠ Y DE QUÉ PROVINCIA. Un cliente con convenio multilateral liquida una
+    -- DJ por jurisdicción: una recaudación de IIBB sin provincia no se puede
+    -- descontar en ninguna sin elegir por él. Cuando el cliente tiene una sola
+    -- jurisdicción no hace falta escribirla — es esa.
+    jurisdiccion TEXT,
     cuit_contraparte TEXT,
     pago_id      INTEGER,
     conciliado   INTEGER NOT NULL DEFAULT 0,
@@ -283,6 +288,7 @@ CREATE TABLE reglas_clasificacion (
     rango      TEXT NOT NULL,              -- Ingreso | Egreso | Impuesto | …
     subrango   TEXT NOT NULL,              -- el concepto, abierto
     tributo    TEXT,                       -- si ese concepto ES un tributo, cuál
+    jurisdiccion TEXT,                      -- y de qué provincia, si es de IIBB
     -- ⚠ Prioridad MENOR gana: las reglas se aplican de mayor a menor para que
     -- la más específica escriba última. Al revés, la general le pisa el
     -- resultado a la que la persona escribió para ese caso puntual.
