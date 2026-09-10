@@ -61,10 +61,27 @@ CORS(app)
 
 # ══ LICENCIA ════════════════════════════════════════════════════════════════
 # El sistema corre en la máquina del estudio: no hay forma de apagarlo desde
-# afuera, solo de que se niegue a trabajar. Y «negarse» es SOLO LECTURA, nunca
-# pantalla negra: ve todo, imprime y exporta —son libros que está obligado a
-# conservar— pero no carga, no edita y no corre jobs.
+# afuera, solo de que se niegue a trabajar.
+#
+# ⚠ Y «negarse» es SOLO LA AUTOMATIZACIÓN (Juan, 10/09): *«que se le frene es
+# solo que no le funcionen los parsers y las conciliaciones automáticas — si
+# sigue cargando cosas a mano lo puede seguir usando»*. Se corta lo que se
+# paga. Cargar, editar, conciliar a mano, imprimir y exportar siguen andando:
+# el que dejó de pagar no pierde el acceso a sus libros —que está obligado a
+# conservar— pero vuelve a hacer a mano lo que la máquina le hacía.
 _LIC = {"cuando": 0, "estado": None}
+
+# Lo que se apaga, por ruta. La lista es CORTA a propósito: cada cosa que se
+# agregue acá es una que el estudio pagando ya no puede hacer, y la tentación
+# de ir sumando termina en el sistema apagado que decidimos no hacer.
+def _es_automatismo(path, metodo):
+    if metodo in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if path.startswith("/api/jobs/") and path.endswith("/correr"):
+        return "los jobs de ARCA y de rentas"
+    if path == "/api/c/conciliacion/auto":
+        return "la conciliación automática"
+    return None
 
 
 def _licencia(refrescar=False):
@@ -79,14 +96,15 @@ def _licencia(refrescar=False):
 
 @app.before_request
 def _cortar_si_vencio():
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return None
-    if not request.path.startswith("/api/"):
+    que = _es_automatismo(request.path, request.method)
+    if not que:
         return None
     est = _licencia()
-    if est["puede_escribir"]:
+    if est["automatiza"]:
         return None
-    return jsonify({"error": est["titulo"] + " — " + est["detalle"],
+    return jsonify({"error": f"{est['titulo']}. Sin licencia al día no corre "
+                             f"{que}, pero el resto del sistema sigue: se puede "
+                             "cargar y conciliar a mano.",
                     "licencia": est}), 403
 
 

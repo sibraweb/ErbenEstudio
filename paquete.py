@@ -120,7 +120,7 @@ def asegurar(url=None, forzar=False):
     `carpeta` es None cuando no hay nada usable — y ahí los jobs no corren.
     `novedad` es la línea para mostrar o loguear."""
     est = licencia.estado()
-    if not est["puede_escribir"]:
+    if not est["automatiza"]:
         # Sin permiso no se baja ni se corre: es exactamente el punto.
         puesto = instalado()
         return None, f"{est['titulo']} — los jobs no corren."

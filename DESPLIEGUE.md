@@ -186,16 +186,30 @@ permiso a nadie** — que es como corre hoy el estudio que lo desarrolla.
 |---|---|
 | `al_dia` | todo normal |
 | `gracia` | venció hace poco: trabaja igual, avisa y hace la cuenta regresiva |
-| `vencida` | **solo lectura** |
-| `sin_licencia` · `adulterada` | **solo lectura** |
+| `vencida` | **sin automatismos** |
+| `sin_licencia` · `adulterada` | **sin automatismos** |
 
 **Tiene fecha, no es una pregunta en vivo.** Si cada arranque tuviera que
 consultarnos, un corte de internet un 20 a las 11 de la noche dejaría a un
 estudio sin poder presentar, y esa llamada la atendemos nosotros.
 
-**Y «solo lectura» no es pantalla negra**: ve todo, imprime y exporta. Son
-libros que el estudio está obligado a conservar; quedárselos de rehén, además
-de feo, es un problema legal. Lo que se corta es poder seguir trabajando.
+### Qué se apaga, exactamente
+
+Frenar **no es apagar**. Se corta lo que se paga, que es la automatización:
+
+* los **jobs** no entran a ARCA ni a los portales de rentas;
+* la **conciliación automática** no aparea sola.
+
+Sigue andando todo lo demás: cargar, editar, conciliar a mano, imprimir y
+exportar. El estudio que dejó de pagar no pierde el acceso a sus libros —que
+además está obligado a conservar— pero vuelve a hacer a mano lo que la máquina
+le hacía. Esa es la factura que se siente, y es la que hace que llamen para
+pagar en vez de para putear.
+
+⚠ La lista de rutas que se apagan (`_es_automatismo` en `server.py`) es **corta
+a propósito**. Cada cosa que se agregue ahí es una que el estudio pagando ya no
+puede hacer, y la tentación de ir sumando termina en el sistema apagado que
+decidimos no hacer.
 
 ```
 py herramientas/firmar.py --generar-clave          una sola vez

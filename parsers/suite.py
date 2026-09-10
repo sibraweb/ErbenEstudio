@@ -185,7 +185,7 @@ def correr(clave, args=None):
     # ⚠ Los jobs son lo que NO se puede reproducir: saben entrar a ARCA y a los
     # portales de rentas. Sin permiso vigente no corren — ver `paquete.py`.
     est = licencia.estado()
-    if not est["puede_escribir"]:
+    if not est["automatiza"]:
         return 3, f"{est['titulo']}\n  {est['detalle']}"
     """Lanza un job y devuelve (codigo, salida). Los atendidos abren su ventana
     y esperan a la persona: por eso no hay timeout corto."""

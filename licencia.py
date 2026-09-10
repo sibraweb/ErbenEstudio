@@ -13,18 +13,24 @@ agente lo lee de disco, verifica la firma y mira la fecha.
 
     al_dia   → todo normal
     gracia   → venció hace poco: trabaja igual y avisa, con cuenta regresiva
-    vencida  → SOLO LECTURA
-    sin_licencia / adulterada → SOLO LECTURA
+    vencida  → SIN AUTOMATISMOS
+    sin_licencia / adulterada → SIN AUTOMATISMOS
 
 ⚠ EL PERMISO TIENE FECHA, NO ES UNA PREGUNTA EN VIVO. Si cada arranque tuviera
 que consultarnos, un corte de internet un 20 a las 11 de la noche dejaría al
 estudio sin poder presentar — y esa llamada la atendemos nosotros. Con el
 permiso guardado aguanta el corte y se apaga solo cuando pasa la gracia.
 
-⚠ Y «solo lectura» NO es pantalla negra. Ve todo, imprime y exporta; lo que no
-puede es cargar, editar ni correr jobs. Son libros que el estudio está obligado
-a conservar: quedárselos de rehén, además de feo, es un problema legal. Lo que
-se corta es poder seguir trabajando, no el acceso a lo que ya es suyo.
+⚠ Y frenar el sistema NO es apagarlo (Juan, 10/09): *«que se le frene es solo
+que no le funcionen los parsers y las conciliaciones automáticas — si sigue
+cargando cosas a mano lo puede seguir usando»*. Se corta **lo que se paga**,
+que es la automatización: los jobs no entran a ARCA ni a rentas, y la
+conciliación no aparea sola. Cargar, editar, conciliar a mano, imprimir y
+exportar siguen andando.
+
+Es mejor negocio y es más limpio: el que dejó de pagar no pierde el acceso a
+sus propios libros —que además está obligado a conservar— pero vuelve a hacer
+a mano lo que la máquina le hacía. Esa es la factura que se siente.
 
 El candado es de vidrio y conviene saberlo
 ------------------------------------------
@@ -47,6 +53,15 @@ CLAVE_PUBLICA = os.environ.get("ERBEN_CLAVE_PUBLICA", "")
 
 ARCHIVO = rutas.RUNTIME / "licencia.json"      # ⚠ fuera del Drive, como la base
 GRACIA_POR_DEFECTO = 7
+
+# La frase única, para que la pantalla, la consola y el error del API digan lo
+# mismo. Que enumere lo que SÍ anda no es cortesía: es la diferencia entre
+# «se rompió» y «me cortaron un servicio», y de esa lectura depende que llamen
+# para pagar en vez de para putear.
+SIN_AUTOMATISMOS = (
+    "El sistema quedó sin automatismos: los jobs no entran a ARCA ni a rentas, "
+    "y la conciliación automática no aparea sola. Todo lo demás sigue andando "
+    "— cargar, editar, conciliar a mano, imprimir y exportar.")
 
 
 def exige():
@@ -101,36 +116,34 @@ def estado(archivo=None, hoy=None):
     """Cómo está esta instalación, en una sola llamada.
 
     Devuelve siempre la misma forma —la pantalla la muestra tal cual— con
-    `puede_escribir` ya resuelto, para que nadie tenga que volver a razonar la
+    `automatiza` ya resuelto, para que nadie tenga que volver a razonar la
     regla en el front."""
     hoy = hoy or date.today()
     if not exige():
-        return {"estado": "sin_control", "puede_escribir": True,
+        return {"estado": "sin_control", "automatiza": True,
                 "titulo": "Sin control de licencia",
                 "detalle": "Esta compilación no pide permiso.",
                 "dias": None, "vence": None, "estudio": None}
 
     datos = leer(archivo)
     if not datos:
-        return {"estado": "sin_licencia", "puede_escribir": False,
+        return {"estado": "sin_licencia", "automatiza": False,
                 "titulo": "Sin licencia",
-                "detalle": "No hay permiso instalado. El sistema queda en solo "
-                           "lectura: se puede ver, imprimir y exportar todo, "
-                           "pero no cargar ni correr jobs.",
+                "detalle": SIN_AUTOMATISMOS,
                 "dias": None, "vence": None, "estudio": None}
 
     if not firma_valida(datos):
-        return {"estado": "adulterada", "puede_escribir": False,
+        return {"estado": "adulterada", "automatiza": False,
                 "titulo": "La licencia no es válida",
                 "detalle": "La firma no cierra: el archivo fue modificado o no "
-                           "lo emitimos nosotros.",
+                           "lo emitimos nosotros. " + SIN_AUTOMATISMOS,
                 "dias": None, "vence": None,
                 "estudio": datos.get("estudio")}
 
     try:
         vence = datetime.fromisoformat(str(datos["vence"])[:10]).date()
     except (KeyError, ValueError):
-        return {"estado": "adulterada", "puede_escribir": False,
+        return {"estado": "adulterada", "automatiza": False,
                 "titulo": "La licencia no es válida",
                 "detalle": "No dice hasta cuándo vale.",
                 "dias": None, "vence": None, "estudio": datos.get("estudio")}
@@ -141,23 +154,22 @@ def estado(archivo=None, hoy=None):
              "email": datos.get("email"), "instalacion": datos.get("instalacion")}
 
     if dias >= 0:
-        return {**comun, "estado": "al_dia", "puede_escribir": True, "dias": dias,
+        return {**comun, "estado": "al_dia", "automatiza": True, "dias": dias,
                 "titulo": "Licencia al día",
                 "detalle": f"Vence en {dias} día(s)." if dias <= 10 else ""}
     if hoy <= vence + timedelta(days=gracia):
         quedan = (vence + timedelta(days=gracia) - hoy).days
-        return {**comun, "estado": "gracia", "puede_escribir": True, "dias": -dias,
+        return {**comun, "estado": "gracia", "automatiza": True, "dias": -dias,
                 "titulo": f"La licencia venció hace {-dias} día(s)",
-                "detalle": f"El sistema sigue funcionando {quedan} día(s) más. "
-                           "Después queda en solo lectura."}
-    return {**comun, "estado": "vencida", "puede_escribir": False, "dias": -dias,
+                "detalle": f"Los jobs y la conciliación automática funcionan "
+                           f"{quedan} día(s) más."}
+    return {**comun, "estado": "vencida", "automatiza": False, "dias": -dias,
             "titulo": f"La licencia venció hace {-dias} día(s)",
-            "detalle": "El sistema quedó en solo lectura: se puede ver, imprimir "
-                       "y exportar todo, pero no cargar, editar ni correr jobs."}
+            "detalle": SIN_AUTOMATISMOS}
 
 
-def puede_escribir(archivo=None):
-    return estado(archivo)["puede_escribir"]
+def automatiza(archivo=None):
+    return estado(archivo)["automatiza"]
 
 
 if __name__ == "__main__":
@@ -173,4 +185,4 @@ if __name__ == "__main__":
     print(f"\n  archivo:  {ARCHIVO}   {'✓' if ARCHIVO.exists() else '✗ no está'}")
     print(f"  estudio:  {e.get('estudio') or '—'}")
     print(f"  vence:    {e.get('vence') or '—'}")
-    print(f"  escribe:  {'sí' if e['puede_escribir'] else 'NO (solo lectura)'}\n")
+    print(f"  jobs:     {'sí' if e['automatiza'] else 'NO (sin automatismos)'}\n")

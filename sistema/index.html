@@ -348,10 +348,10 @@ function colorFecha(f){
 
 /* ── el filtro de empresa: manda sobre todos los módulos ── */
 /* ── LA LICENCIA ──
-   Si venció, el sistema queda en SOLO LECTURA: ve todo, imprime y exporta,
-   pero no carga ni corre jobs. Lo que no puede pasar es que alguien apriete
-   Guardar, no pase nada y no sepa por qué — por eso el cartel va arriba de
-   todo y dice qué se puede y qué no. */
+   Si venció, lo que se apaga son los AUTOMATISMOS: los jobs y la conciliación
+   automática. Cargar, editar, conciliar a mano, imprimir y exportar siguen.
+   El cartel va arriba de todo y dice exactamente eso — que se sepa que el
+   sistema no se rompió, que hay un servicio cortado, y qué sigue andando. */
 async function verLicencia(){
   let l;
   try{ l = await api('/api/licencia'); }catch(e){ return; }
@@ -360,7 +360,7 @@ async function verLicencia(){
   if (!c || l.estado === 'sin_control' || l.estado === 'al_dia'){
     if (c) c.innerHTML = ''; return;
   }
-  const grave = !l.puede_escribir;
+  const grave = !l.automatiza;
   c.innerHTML = `<div style="padding:10px 18px;border-bottom:1px solid var(--bor);
     background:${grave ? 'rgba(220,60,60,.10)' : 'rgba(220,160,40,.10)'}">
     <b>${esc(l.titulo)}</b> ${esc(l.detalle)}
