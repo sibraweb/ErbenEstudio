@@ -82,6 +82,11 @@ SEMILLA = DRIVE / "semilla.json"
 # ── lo que NO va al Drive ────────────────────────────────────────────────────
 RUNTIME = Path(os.environ.get("ERBEN_RUNTIME", r"C:\SIBRA\estudio"))
 DB_PATH = Path(os.environ.get("ESTUDIO_DB", str(RUNTIME / "estudio.sqlite3")))
+# ⚠ HOY NO LA USA NADIE. El sistema escribe en una CARPETA del Drive montada
+# con Drive para Escritorio, no contra la API de Google. Esto queda anotado
+# para el dia que la pantalla publicada tenga que leer el Drive del estudio
+# desde el navegador — ahi si hace falta un proyecto en Google Cloud Console
+# y un cliente OAuth. Mientras el Drive se monte como carpeta, no.
 CREDENCIALES_GOOGLE = RUNTIME / "credentials.json"
 
 

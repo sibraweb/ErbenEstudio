@@ -5815,9 +5815,16 @@ def api_panel():
         faltan = [dict(x) for x in {tuple(sorted(f.items())): f for f in faltan}.values()]
     except Exception:
         pass
-    drive = rutas.CREDENCIALES_GOOGLE
-    if not drive.exists():
-        faltan.append({"que": "credentials.json de Google", "fuente": "drive", "alias": None})
+    # ⚠ LA CREDENCIAL DE GOOGLE SOLO HACE FALTA SI EL DRIVE NO ESTÁ MONTADO.
+    # Hoy el sistema escribe en una CARPETA (Drive para Escritorio), no contra
+    # la API: `credentials.json` no lo usa nadie. Pedirlo igual mandaba a
+    # sacar una credencial a Google Cloud Console para resolver un problema que
+    # no existe — y «lo que falta» tiene que ser lo que de verdad falta, o deja
+    # de leerse.
+    if not rutas.hay_drive() and not rutas.CREDENCIALES_GOOGLE.exists():
+        faltan.append({"que": "el Drive no está montado y tampoco hay credentials.json "
+                              "de Google para llegar por la API",
+                       "fuente": "drive", "alias": None})
 
     return jsonify({
         "base": {"ruta": str(DB_PATH), "existe": DB_PATH.exists(),
