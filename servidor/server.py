@@ -1081,6 +1081,105 @@ def api_cuenta_saldo_inicial(cid_cta):
     return jsonify({"ok": True})
 
 
+# ── BUSCAR LA FACTURA POR MONTO ─────────────────────────────────────────────
+# La ventana la dictó Juan (15/09): **4 meses antes y 1 mes después** del
+# movimiento. No es un número redondo puesto al azar — es el tiempo real que
+# puede pasar entre que se emite una factura y se paga, y el mes de después
+# cubre la factura que llega con fecha posterior al pago.
+#
+# ⚠ Y ES LO ÚNICO QUE QUEDA cuando el extracto no dice con quién fue. El del
+# Banco de Formosa trae los anexos de transferencias con CBU y CUIT VACÍOS: de
+# 96 transferencias emitidas en dos meses, ninguna dice a quién. La conciliación
+# automática pide monto + fecha cerca + CUIT o nombre, así que con ese extracto
+# no propone NADA. Acá se afloja a propósito: monto exacto y una ventana ancha,
+# y ELIGE UNA PERSONA. Por eso esto no concilia solo, solo muestra.
+MESES_ANTES = 4
+MESES_DESPUES = 1
+
+
+def _correr_meses(iso, n):
+    """La misma fecha n meses después (negativo = antes).
+
+    Se cuenta en MESES, no en días: «4 meses antes» de un 31 de marzo es el 30
+    de noviembre, no 120 días atrás. Y el día se recorta al último del mes
+    cuando no existe — 31 de marzo menos 1 mes es 28 o 29 de febrero."""
+    d = datetime.fromisoformat(iso[:10]).date()
+    total = d.month - 1 + n
+    anio, mes = d.year + total // 12, total % 12 + 1
+    siguiente = date(anio + (mes == 12), mes % 12 + 1, 1)
+    ultimo = (siguiente - timedelta(days=1)).day
+    return date(anio, mes, min(d.day, ultimo)).isoformat()
+
+
+@app.get("/api/c/movimientos/<int:mid>/facturas")
+def api_movimiento_facturas(mid):
+    """Las facturas que podrían ser ESTE movimiento, buscadas por monto.
+
+    Compara contra lo que FALTA pagar de cada factura, no contra su total: una
+    factura pagada a medias se cancela con lo que queda, y buscar por el total
+    la dejaría afuera justo cuando el movimiento es el que la termina.
+
+    El signo manda: un débito solo puede pagar una compra y un crédito solo
+    puede cobrar una venta. Sin eso aparecen candidatas imposibles y la lista
+    deja de servir."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    mov = _de_este_cliente(con, "movimientos_banco", mid, cli["id"])
+    if not mov:
+        con.close()
+        return jsonify({"error": "movimiento inexistente para este cliente"}), 404
+
+    imp = round(abs(_n(mov["importe"])), 2)
+    desde = _correr_meses(mov["fecha"], -MESES_ANTES)
+    hasta = _correr_meses(mov["fecha"], MESES_DESPUES)
+    quiero = "compra" if _n(mov["importe"]) < 0 else "venta"
+
+    todas = filas(con.execute(
+        "SELECT f.*, e.cuit, m.razon_social, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a "
+        "            WHERE a.factura_id=f.id),0) AS pagado "
+        "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit "
+        "WHERE f.cliente_id=? AND f.mov=? AND f.fecha BETWEEN ? AND ? "
+        "ORDER BY f.fecha DESC", (cli["id"], quiero, desde, hasta)))
+
+    desc = (mov["descripcion"] or "").upper()
+    digitos = re.sub(r"\D", "", desc)
+    coinciden = []
+    for f in todas:
+        f["saldo"] = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
+        if abs(f["saldo"] - imp) > 0.01:
+            continue
+        # No hace falta que el CUIT esté para proponerla —si estuviera, la
+        # conciliación automática ya la habría agarrado— pero si aparece se
+        # marca, porque sube muchísimo la confianza de quien elige.
+        f["por_cuit"] = bool(f["cuit"]) and (mov["cuit_contraparte"] == f["cuit"]
+                                             or f["cuit"] in digitos)
+        f["por_nombre"] = bool(f["razon_social"]) and \
+            f["razon_social"].split()[0].upper() in desc
+        f["dias"] = _dias(mov["fecha"], f["fecha"])
+        coinciden.append(f)
+    # Primero las que además tienen el CUIT o el nombre, y después por
+    # cercanía: la más próxima al movimiento es la candidata más probable.
+    coinciden.sort(key=lambda f: (not (f["por_cuit"] or f["por_nombre"]),
+                                  f["dias"] if f["dias"] is not None else 9999))
+    con.close()
+    return jsonify({
+        "movimiento": {"id": mov["id"], "fecha": mov["fecha"],
+                       "descripcion": mov["descripcion"], "importe": _n(mov["importe"]),
+                       "conciliado": mov["conciliado"]},
+        "busca": quiero, "importe": imp, "desde": desde, "hasta": hasta,
+        "meses_antes": MESES_ANTES, "meses_despues": MESES_DESPUES,
+        "coinciden": coinciden,
+        "en_la_ventana": len(todas),
+        "nota": f"{quiero.capitalize()}s por {imp:,.2f} entre {desde} y {hasta}. "
+                "Se compara contra lo que falta pagar de cada una.",
+    })
+
+
 @app.post("/api/c/movimientos/<int:mid>/clasificar")
 def api_clasificar_uno(mid):
     """Clasificar un movimiento a mano, y ofrecer hacerlo regla."""

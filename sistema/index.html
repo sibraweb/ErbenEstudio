@@ -1807,7 +1807,7 @@ async function bMovs(){
         <div class="full"><label>Concepto</label><input id="nm-desc"></div>
         <div style="display:flex;align-items:flex-end"><button onclick="altaMovimiento()">Agregar</button></div>
       </div></div>
-      ${ms.length ? tabla(['Fecha','Banco','Concepto','Clasificación','CUIT','Importe','Qué lo explica','Estado'],
+      ${ms.length ? tabla(['Fecha','Banco','Concepto','Clasificación','CUIT','Importe','Qué lo explica','Estado',''],
         ms.map(m => [fecha(m.fecha), esc(m.banco),
           esc((m.descripcion||'sin descripción').slice(0,44)),
           m.rango ? `${esc(m.rango)}<div class="mini">${esc(m.subrango||'')}</div>`
@@ -1815,10 +1815,74 @@ async function bMovs(){
           esc(m.cuit_contraparte||'—'),
           {n:`<span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span>`},
           m.recibo ? esc('recibo '+m.recibo) : '<span class="mini">—</span>',
-          m.conciliado ? '<span class="badge b-ok">conciliado</span>' : '<span class="badge b-warn">sin registrar</span>']),
+          m.conciliado ? '<span class="badge b-ok">conciliado</span>' : '<span class="badge b-warn">sin registrar</span>',
+          m.conciliado ? '' : `<button class="g xs" onclick="event.stopPropagation();buscarFactura(${m.id})">Buscar factura</button>`]),
         {onclick: i => `verCadena('banco',${ms[i].id})`})
         : '<div class="vacio">Sin movimientos. Los carga el job del banco o se agregan a mano.</div>'}
     </div>`);
+}
+
+/* ── BUSCAR LA FACTURA POR MONTO ──
+   Cuando el extracto no dice con quién fue, esto es lo único que queda. El del
+   Banco de Formosa trae los anexos de transferencias con CBU y CUIT vacíos: de
+   96 transferencias emitidas en dos meses, ninguna dice a quién. La
+   conciliación automática pide monto + fecha cerca + CUIT o nombre, así que
+   con ese extracto no propone nada.
+
+   Acá se busca por MONTO en una ventana ancha —4 meses antes, 1 después— y
+   elige una persona. Es a propósito que no concilie sola: con la ventana
+   abierta pueden aparecer dos facturas del mismo importe, y adivinar sería
+   peor que no hacer nada. */
+async function buscarFactura(mid){
+  const d = await api(`/api/c/movimientos/${mid}/facturas`);
+  const viejo = $('#modal-fac'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-fac';
+  const m = d.movimiento;
+  el.innerHTML = `<div class="box" style="max-width:900px">
+    <h3>¿Qué factura es este movimiento?</h3>
+    <div class="mini" style="margin-bottom:10px">
+      ${fecha(m.fecha)} · ${esc(m.descripcion||'sin descripción')} ·
+      <b class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</b></div>
+    <div class="aviso">Se buscan <b>${esc(d.busca)}s por ${plata(d.importe)}</b> entre el
+      ${fecha(d.desde)} y el ${fecha(d.hasta)} — ${d.meses_antes} meses antes y
+      ${d.meses_despues} después del movimiento.<br>Se compara contra <b>lo que falta pagar</b>
+      de cada una, no contra el total: una factura pagada a medias se cancela con lo que queda.
+      </div>
+    ${d.coinciden.length ? tabla(['Fecha','Comprobante','Entidad','Falta pagar','Distancia','',''],
+      d.coinciden.map(f => [fecha(f.fecha),
+        `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+        esc(f.razon_social||'—'),
+        {n:plata(f.saldo)},
+        f.dias === 0 ? 'el mismo día' : `${f.dias} día(s)`,
+        f.por_cuit ? '<span class="badge b-ok">el CUIT está en el movimiento</span>'
+          : (f.por_nombre ? '<span class="badge b-ok">el nombre está en el movimiento</span>'
+             : '<span class="mini">solo coincide el monto</span>'),
+        `<button class="xs" onclick="imputarFactura(${mid},${f.id})">Es esta</button>`]))
+      : `<div class="vacio">Ninguna ${esc(d.busca)} por ${plata(d.importe)} en ese período.
+         ${d.en_la_ventana ? `Hay ${d.en_la_ventana} ${esc(d.busca)}(s) en la ventana, pero por
+           otros montos — puede que este movimiento pague varias juntas, o una parte.`
+          : `Tampoco hay ninguna ${esc(d.busca)} cargada en esas fechas.`}</div>`}
+    ${d.coinciden.length > 1 ? `<div class="aviso" style="border-left-color:var(--warn)">
+      <b>Hay ${d.coinciden.length} por el mismo monto.</b> Por eso no se elige sola: mirá la
+      distancia y si alguna trae el CUIT o el nombre en el concepto del extracto.</div>` : ''}
+    <div class="row-act" style="justify-content:flex-end;margin-top:14px">
+      <button class="g" onclick="$('#modal-fac').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+}
+
+async function imputarFactura(mid, fid){
+  try{
+    const r = await post('/api/c/conciliacion/manual',
+      {movimiento_id: mid, tipo: 'factura', id: fid,
+       motivo: 'imputada por monto desde el banco'});
+    $('#modal-fac')?.remove();
+    // El recibo se fabrica solo: sin él la cuenta corriente seguiría mostrando
+    // al proveedor impago con el banco ya explicado.
+    toast(`Imputada — recibo #${r.pago_id} generado`);
+    vBancos();
+  }catch(e){ toast(e.message, true); }
 }
 
 async function clasificarMov(mid, concepto){
