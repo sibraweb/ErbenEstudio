@@ -40,6 +40,28 @@ DRIVE = Path(os.environ.get("ERBEN_DRIVE", r"H:\My Drive\ERBEN"))
 # Se anota para cuando el job hable con la API de Google; hoy se usa el disco.
 DRIVE_ID = "11mAJsY5oZcRgZLrYnDJX3WmckVHwb7NP"
 
+# ── LO QUE TODAVÍA ES NUESTRO Y NO DEBERÍA ──────────────────────────────────
+# Algunos jobs son heredados de SIBRA y escriben en NUESTRO Drive: no saben que
+# existe ERBEN. Mientras eso siga así, el estudio depende de una cuenta que no
+# es suya — y el objetivo declarado es al revés (Juan, 15/09: *«que no corra en
+# la nuestra»*).
+#
+# Por eso la carpeta prestada tiene nombre propio en vez de estar escrita a
+# mano en el medio de un parser: el día que ERBEN tenga su cuenta de Google se
+# setea `SIBRA_DRIVE` vacío y **todo lo que mira para afuera deja de mirar**,
+# de una. Si algo se rompe ahí, es exactamente lo que faltaba migrar.
+# ⚠ El vacío se mira ANTES de hacerlo Path: `Path("")` es `.` —el directorio
+# actual— y existe siempre, así que apagar el interruptor no apagaba nada y
+# encima dejaba rutas relativas apuntando a cualquier lado.
+_PRESTADO = os.environ.get("SIBRA_DRIVE", r"H:\My Drive\web_sibra").strip()
+SIBRA = Path(_PRESTADO) if _PRESTADO else None
+
+
+def hay_prestado():
+    """¿Se sigue leyendo del Drive nuestro? Con SIBRA_DRIVE vacío, no."""
+    return SIBRA is not None and SIBRA.exists()
+
+
 RESPALDO = DRIVE / "respaldo"
 ESTADO = DRIVE / "estado"          # los .json que dejan los jobs
 CLIENTES = DRIVE / "clientes"

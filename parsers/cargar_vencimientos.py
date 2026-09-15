@@ -58,10 +58,9 @@ ATP_JSON = rutas.ESTADO / "atp_estado.json"
 #
 # Así, el día que se escriba el job propio de ARCA, este cargador deja de mirar
 # para afuera sin que haya que tocar una línea (ARQUITECTURA.md §7).
-ARCA_ORDEN = [
-    rutas.ESTADO / "cct_estado.json",
-    Path(r"H:\My Drive\web_sibra\tesoreria\arca") / "cct_estado.json",
-]
+ARCA_ORDEN = [rutas.ESTADO / "cct_estado.json"]
+if rutas.hay_prestado():
+    ARCA_ORDEN.append(rutas.SIBRA / "tesoreria" / "arca" / "cct_estado.json")
 
 
 def archivo_arca():

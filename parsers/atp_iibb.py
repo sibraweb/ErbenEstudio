@@ -34,8 +34,11 @@ R.G. 05/2026 actúa de piso duro.
 Uso:
     py atp_iibb.py                     # todos los contribuyentes DGR-Fsa
     py atp_iibb.py --alias DEMO   # uno solo
-Salida: H:\\My Drive\\web_sibra\\tesoreria\\atp\\<alias>\\ATP_<fecha>.xlsx (+ .txt + .png)
-        H:\\My Drive\\web_sibra\\tesoreria\\atp\\atp_estado.json (todos los alias)
+Salida: la carpeta `estado` del Drive DEL ESTUDIO (`rutas.ESTADO`) — el
+        `atp_estado.json` que después lee el sistema.
+        ⚠ Acá decía `web_sibra`, que es NUESTRO Drive: quedó viejo cuando el
+        job pasó a escribir en el del estudio, y mandaba a buscar los
+        archivos donde ya no están.
 Códigos: 0 ok (al menos uno) · 1 ninguna sesión viva · 2 error
 """
 import argparse
