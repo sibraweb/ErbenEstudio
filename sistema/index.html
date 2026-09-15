@@ -160,7 +160,11 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
     <select id="sel-empresa" onchange="cambiarEmpresa(this.value)"></select>
     <span class="cuit-chip" id="cuit-chip"></span>
   </div>
-  <button class="g xs" onclick="tema()">◐ Tema</button>
+  <div class="row-act" style="gap:6px">
+    <button class="g xs" onclick="location.hash='panel'">Jobs</button>
+    <button class="g xs" onclick="location.hash='clientes'">Clientes del estudio</button>
+    <button class="g xs" onclick="tema()">◐ Tema</button>
+  </div>
 </div></header>
 
 <div id="cartel-licencia"></div>
@@ -171,18 +175,33 @@ label{display:block;font-size:11px;color:var(--mut);margin-bottom:4px;text-trans
 <script>
 let CLI = null, CLIENTES = [], ACT = [], ENT = [], CTAS = [], LICENCIA = null;
 
+/* ── LOS SIETE BOTONES ──
+   Uno por cada cosa que existe de verdad en un estudio: los comprobantes, la
+   plata que entra y sale, los papeles de esa plata, con quién, los impuestos,
+   y Tesorería que es donde se ve todo junto.
+
+   ⚠ Lo que NO está acá es tan importante como lo que está:
+
+   · Conciliar no es un módulo: es cruzar plata, y vive dentro de Tesorería.
+   · La DJ de IIBB tampoco: es un impuesto, y vive dentro de Impuestos. Tenerla
+     suelta partía la pregunta «¿qué le debo al fisco?» en dos botones.
+   · Los jobs y los clientes del estudio son administración NUESTRA, no
+     contabilidad del cliente: se fueron arriba, al lado de la empresa.
+
+   Cada cosa que se agregue acá le cuesta atención a todas las demás. Si algo
+   nuevo no es una de estas siete, es una pestaña de una de estas siete. */
 const MODULOS = [
   ['tesoreria',    'Tesorería'],
   ['facturas',     'Facturas'],
   ['bancos',       'Bancos'],
   ['cheques',      'Cheques'],
   ['pagos',        'Pagos'],
-  // Conciliación NO es un módulo suelto: vive DENTRO de Tesorería, como en el
-  // Conciliar es cruzar plata: por eso vive dentro de Tesorería, no aparte.
   ['impuestos',    'Impuestos'],
-  ['iibb',         'DJ IIBB'],
   ['entidades',    'Entidades'],
-  ['panel',        'Panel'],
+];
+// Lo del estudio, no del cliente. Vive arriba y no gasta un botón del menú.
+const DEL_ESTUDIO = [
+  ['panel',        'Jobs'],
   ['clientes',     'Clientes del estudio'],
 ];
 
@@ -1477,13 +1496,30 @@ async function altaFactura(){
 }
 
 /* ══ IMPUESTOS ══ */
-async function vImpuestos(){
+/* ── IMPUESTOS ──
+   La DJ de IIBB era un botón aparte y eso partía en dos la única pregunta que
+   importa: «¿qué le debo al fisco?». Los vencimientos por un lado y la DJ que
+   los genera por el otro. Ahora es una pestaña de acá. */
+let iTab = 'venc';
+const panelI = h => { const c = $('#i-panel'); if (c) c.innerHTML = h; };
+
+async function vImpuestos(tab){
+  if (tab) iTab = tab;
   cargando('Impuestos');
+  const tabs = [['venc','Vencimientos'],['iibb','DJ de Ingresos Brutos']];
+  pintar(`<h2>Impuestos</h2>
+    <div class="sub">Lo que se le debe al fisco y de dónde sale.
+      La <b>posición de IVA</b> vive en <a href="#facturas">Facturas</a>: sale de los
+      comprobantes, no de un vencimiento.</div>
+    <div class="tabs">${tabs.map(([k,t]) =>
+      `<button class="${iTab===k?'on':''}" onclick="vImpuestos('${k}')">${t}</button>`).join('')}</div>
+    <div id="i-panel"><div class="vacio">Cargando…</div></div>`);
+  (iTab === 'iibb' ? iIIBB : iVenc)();
+}
+
+async function iVenc(){
   const vs = await api('/api/c/vencimientos');
-  pintar(`
-    <h2>Impuestos</h2><div class="sub">Los vencimientos y su ciclo de vida.
-      La <b>liquidación de IVA</b> se mudó a <a href="#facturas">Facturas</a>: sale de los
-      comprobantes y es la posición de IVA.</div>
+  panelI(`
     <div class="panel"><div class="panel-h"><b>Vencimientos</b>
       <button class="g xs" onclick="toggle('#v-alta')">Cargar uno</button></div>
       <div class="panel-b hide" id="v-alta"><div class="f">
@@ -1513,18 +1549,19 @@ async function altaVenc(){
 }
 
 /* ══ DJ IIBB ══ */
-async function vIIBB(){
-  cargando('DJ IIBB');
+// El hash #iibb se mantiene: hay avisos de otras pantallas que linkean ahí.
+const vIIBB = () => vImpuestos('iibb');
+
+async function iIIBB(){
   const per = sessionStorage.getItem('ee-per-iibb') || periodoHoy();
   const d = await api('/api/c/dj/base?periodo=' + encodeURIComponent(per)).catch(e => ({error:e.message}));
-  if (d.error) return pintar(`<h2>DJ IIBB</h2><div class="vacio">${esc(d.error)}</div>`);
-  pintar(`
-    <h2>DJ de Ingresos Brutos</h2>
+  if (d.error) return panelI(`<div class="vacio">${esc(d.error)}</div>`);
+  panelI(`
     <div class="sub">Base por actividad del período — es lo que se carga en el portal de la provincia.</div>
     <div class="panel"><div class="panel-h">
       <div style="display:flex;gap:8px;align-items:center">
         <input style="width:110px" id="dj-per" value="${esc(per)}">
-        <button class="xs" onclick="sessionStorage.setItem('ee-per-iibb',val('dj-per'));vIIBB()">Recalcular</button>
+        <button class="xs" onclick="sessionStorage.setItem('ee-per-iibb',val('dj-per'));iIIBB()">Recalcular</button>
       </div>
       <span class="badge ${d.control_ok ? 'b-ok' : 'b-bad'}">
         ${d.control_ok ? 'control OK: las bases cierran con las ventas'
@@ -1800,6 +1837,13 @@ async function bMovs(){
       <div class="row-act">
         <button class="g xs" onclick="toggle('#b-mov')">+ Movimiento a mano</button>
         <button class="g xs" onclick="reclasificar()">Volver a clasificar todo</button></div></div>
+      <div class="panel-b" id="b-lote" ${loteSel.size ? '' : 'hidden'}>
+        <div class="f"><div style="display:flex;align-items:center;gap:10px">
+          <b id="b-lote-n">${loteSel.size}</b> movimiento(s) tildado(s) ·
+          <b id="b-lote-t">${plata(loteTotal())}</b>
+          <button onclick="probarLote()">Probar contra facturas</button>
+          <button class="g" onclick="loteSel.clear();vBancos()">Destildar</button>
+        </div></div></div>
       <div class="panel-b hide" id="b-mov"><div class="f">
         <div><label>Cuenta</label><select id="nm-cta">${optCta()}</select></div>
         <div><label>Fecha</label><input type="date" id="nm-fecha" value="${hoy()}"></div>
@@ -1807,19 +1851,141 @@ async function bMovs(){
         <div class="full"><label>Concepto</label><input id="nm-desc"></div>
         <div style="display:flex;align-items:flex-end"><button onclick="altaMovimiento()">Agregar</button></div>
       </div></div>
-      ${ms.length ? tabla(['Fecha','Banco','Concepto','Clasificación','CUIT','Importe','Qué lo explica','Estado',''],
-        ms.map(m => [fecha(m.fecha), esc(m.banco),
+      ${ms.length ? tabla(['','Fecha','Banco','Concepto','Clasificación','CUIT','Importe','Qué lo explica','Estado',''],
+        ms.map(m => [
+          m.conciliado ? '' : `<input type="checkbox" style="width:auto" ${loteSel.has(m.id)?'checked':''}
+             onclick="event.stopPropagation()" onchange="tildarMov(${m.id},${m.importe})">`,
+          fecha(m.fecha), esc(m.banco),
           esc((m.descripcion||'sin descripción').slice(0,44)),
           m.rango ? `${esc(m.rango)}<div class="mini">${esc(m.subrango||'')}</div>`
             : `<button class="g xs" onclick="event.stopPropagation();clasificarMov(${m.id},'${esc((m.descripcion||'').slice(0,30))}')">clasificar</button>`,
           esc(m.cuit_contraparte||'—'),
           {n:`<span class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</span>`},
-          m.recibo ? esc('recibo '+m.recibo) : '<span class="mini">—</span>',
+          m.recibo
+            ? `<b>${esc(m.recibo)}</b>${m.contraparte ? `<div class="mini">${esc(m.contraparte)}</div>` : ''}${
+                m.facturas ? `<div class="mini">${esc(m.facturas)}</div>` : ''}`
+            : (m.conciliado_con ? `<span class="mini">${esc(m.conciliado_con)}</span>`
+               : '<span class="mini">—</span>'),
           m.conciliado ? '<span class="badge b-ok">conciliado</span>' : '<span class="badge b-warn">sin registrar</span>',
           m.conciliado ? '' : `<button class="g xs" onclick="event.stopPropagation();buscarFactura(${m.id})">Buscar factura</button>`]),
         {onclick: i => `verCadena('banco',${ms[i].id})`})
         : '<div class="vacio">Sin movimientos. Los carga el job del banco o se agregan a mano.</div>'}
     </div>`);
+}
+
+/* ── VARIOS MOVIMIENTOS CONTRA VARIAS FACTURAS ──
+   «la parte difícil es conciliar facturas» (Juan, 15/09). Y lo es porque la
+   realidad no viene de a uno: tres transferencias el mismo día para una
+   factura grande, o una sola para cinco chicas.
+
+   ⚠ El sistema NO prueba combinaciones. Con veinte facturas hay un millón de
+   sumas posibles y alguna siempre da: la que da no tiene por qué ser la que
+   pasó. Elige la persona; la máquina hace la cuenta, no la deja violar las
+   reglas, y después hace el papelerío. */
+const loteSel = new Map();     // id → importe
+
+function loteTotal(){
+  let t = 0; loteSel.forEach(v => t += Math.abs(v)); return t;
+}
+function tildarMov(id, importe){
+  loteSel.has(id) ? loteSel.delete(id) : loteSel.set(id, importe);
+  const c = $('#b-lote'); if (!c) return;
+  c.hidden = !loteSel.size;
+  $('#b-lote-n').textContent = loteSel.size;
+  $('#b-lote-t').textContent = plata(loteTotal());
+}
+
+let loteAplic = {};            // factura_id → importe a aplicar
+
+async function probarLote(){
+  if (!loteSel.size) return toast('No tildaste ningún movimiento', true);
+  const d = await api('/api/c/conciliacion/lote?movimientos=' + [...loteSel.keys()].join(','))
+    .catch(e => ({error: e.message}));
+  if (d.error) return toast(d.error, true);
+  loteAplic = {};
+  const viejo = $('#modal-lote'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-lote';
+  el.innerHTML = `<div class="box" style="max-width:940px">
+    <h3>${d.movimientos.length} movimiento(s) · <b>${plata(d.total)}</b></h3>
+    <div class="mini" style="margin-bottom:8px">${d.movimientos.map(m =>
+      `${fecha(m.fecha)} ${esc((m.descripcion||'').slice(0,28))} ${plata(m.importe)}`).join(' · ')}</div>
+    <div class="aviso">Elegí las ${esc(d.busca)}s hasta llegar a <b>${plata(d.total)}</b>.
+      Se muestran las que tienen saldo entre el ${fecha(d.desde)} y el ${fecha(d.hasta)}.
+      <br><b>El recibo es de UNA entidad</b>: si las transferencias fueron a dos proveedores
+      distintos, son dos recibos y hay que hacerlo dos veces — porque eso es lo que pasó.</div>
+    <div style="position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:2">
+      Aplicado <b id="lote-suma">$0,00</b> de <b>${plata(d.total)}</b>
+      <span id="lote-falta" class="mini"></span>
+      <button id="lote-ok" style="margin-left:10px" disabled
+        onclick="cerrarLote()">Imputar y generar el recibo</button>
+    </div>
+    ${d.grupos.length ? d.grupos.map(g => `
+      <div class="panel"><div class="panel-h">
+        <b>${esc(g.razon_social||'—')}</b>
+        <span class="mini">${g.facturas.length} con saldo · ${plata(g.saldo_total)}
+          ${g.alcanza ? '' : ' · <span class="neg">no alcanza para este total</span>'}
+          ${g.exacta.length ? ' · <b class="pos">hay una por el importe exacto</b>' : ''}</span></div>
+      ${tabla(['','Fecha','Comprobante','Falta pagar','Aplicar'],
+        g.facturas.map(f => [
+          `<input type="checkbox" style="width:auto" onchange="tildarFac(${f.id},${f.saldo},this.checked)">`,
+          fecha(f.fecha),
+          `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+          {n: plata(f.saldo) + (Math.abs(f.saldo - d.total) < 0.01
+              ? '<div class="mini pos">es el importe exacto</div>' : '')},
+          `<input id="ap-${f.id}" type="number" step="0.01" style="width:130px" disabled
+             oninput="montoFac(${f.id},${f.saldo},this)">`]))}
+      </div>`).join('')
+      : `<div class="vacio">No hay ${esc(d.busca)}s con saldo en ese período.</div>`}
+    <div class="row-act" style="justify-content:flex-end;margin-top:14px">
+      <button class="g" onclick="$('#modal-lote').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.dataset.total = d.total;
+  el.onclick = e => { if (e.target === el) el.remove(); };
+}
+
+function tildarFac(id, saldo, tildado){
+  const inp = $('#ap-' + id);
+  if (tildado){
+    // Por default se aplica lo MENOR entre lo que falta de la factura y lo que
+    // queda por cubrir: es lo que se quiere en el 95% de los casos.
+    const falta = Math.round((+$('#modal-lote').dataset.total - sumaAplic()) * 100) / 100;
+    const v = Math.min(saldo, Math.max(falta, 0)) || saldo;
+    loteAplic[id] = v; inp.disabled = false; inp.value = v.toFixed(2);
+  } else {
+    delete loteAplic[id]; inp.disabled = true; inp.value = '';
+  }
+  pintarSumaLote();
+}
+function montoFac(id, saldo, inp){
+  let v = parseFloat(inp.value) || 0;
+  if (v > saldo){ v = saldo; inp.value = saldo.toFixed(2); }   // nunca más de lo que falta
+  loteAplic[id] = v;
+  pintarSumaLote();
+}
+const sumaAplic = () => Math.round(Object.values(loteAplic).reduce((a,b) => a + b, 0) * 100) / 100;
+
+function pintarSumaLote(){
+  const total = +$('#modal-lote').dataset.total;
+  const s = sumaAplic(), dif = Math.round((total - s) * 100) / 100;
+  $('#lote-suma').textContent = plata(s);
+  $('#lote-falta').textContent = Math.abs(dif) < 0.01 ? '· cierra' :
+    (dif > 0 ? `· faltan ${plata(dif)}` : `· sobran ${plata(-dif)}`);
+  $('#lote-falta').className = 'mini ' + (Math.abs(dif) < 0.01 ? 'pos' : 'neg');
+  $('#lote-ok').disabled = Math.abs(dif) >= 0.01;
+}
+
+async function cerrarLote(){
+  const aplicaciones = Object.entries(loteAplic)
+    .filter(([, v]) => v > 0).map(([k, v]) => ({factura_id: +k, importe: v}));
+  try{
+    const r = await post('/api/c/conciliacion/lote',
+      {movimientos: [...loteSel.keys()], aplicaciones});
+    $('#modal-lote')?.remove();
+    loteSel.clear(); loteAplic = {};
+    toast(`Recibo #${r.pago_id}: ${r.movimientos} movimiento(s) contra ${r.facturas} factura(s)`);
+    vBancos();
+  }catch(e){ toast(e.message, true); }
 }
 
 /* ── BUSCAR LA FACTURA POR MONTO ──
@@ -2818,6 +2984,103 @@ async function guardarPago(){
 
    Regla de estas pantallas: **cada botón dice qué va a pasar ANTES de
    hacerlo**. Nadie tiene que adivinar qué se lleva puesto «Anular». */
+/* ── EDITAR EL RECIBO ──
+   «cuando quiero editar un recibo me aparezca todo lo que está adentro y le
+   sacamos o agregamos líneas de pago, sacamos o sumamos facturas que cancela,
+   modificamos fechas» (Juan, 15/09).
+
+   Estaba la mitad: se podían corregir los medios y SOLTAR una factura, pero no
+   agregarle otra ni mover la fecha — así que arreglar «le apliqué la factura
+   equivocada» obligaba a anular y rehacer, perdiendo el número del recibo. */
+async function editarCabecera(pid, fechaActual, numero){
+  const r = await modal('Fecha y número del recibo',
+    'La fecha es la que más se equivoca: se carga el día que uno lo ve, no el día que pasó.'
+    + '<br><br>De quién es el recibo NO se cambia acá — cambiar eso con facturas ya aplicadas '
+    + 'dejaría canceladas las de otro. Para eso se anula.', [
+    {id:'md-fec', label:'Fecha', html:`<input id="md-fec" type="date" value="${fechaActual.slice(0,10)}">`},
+    {id:'md-num', label:'Número', html:`<input id="md-num" value="${numero}">`},
+    {id:'md-nota', label:'Nota (opcional)', html:'<input id="md-nota">'},
+  ], 'Guardar');
+  if (!r) return;
+  try{
+    await post(`/api/c/pagos/${pid}/cabecera`,
+      {fecha: r['md-fec'], numero: r['md-num'], nota: r['md-nota'] || null});
+    toast('Guardado'); $('#modal-rec')?.remove(); verRecibo(pid);
+  }catch(e){ toast(e.message, true); }
+}
+
+let recAplic = {};
+
+async function agregarFacturas(pid){
+  const d = await api(`/api/c/pagos/${pid}`);
+  const mov = d.direccion === 'cobro' ? 'venta' : 'compra';
+  const fs = (await api('/api/c/facturas?mov=' + mov)).filter(f =>
+    f.entidad_id === d.entidad_id && f.saldo > 0.01);
+  recAplic = {};
+  const viejo = $('#modal-agr'); if (viejo) viejo.remove();
+  const el = document.createElement('div');
+  el.className = 'modal'; el.id = 'modal-agr';
+  el.dataset.tope = d.a_cuenta;
+  el.innerHTML = `<div class="box" style="max-width:820px">
+    <h3>Agregar facturas a ${esc(d.numero || '#'+pid)}</h3>
+    <div class="mini" style="margin-bottom:10px">${esc(d.entidad)} ·
+      <b>${plata(d.a_cuenta)}</b> sin aplicar</div>
+    <div class="aviso">Solo aparecen las ${esc(mov)}s <b>de esta entidad</b> con saldo: un recibo
+      es de uno solo. Y no se puede aplicar más de lo que al recibo le queda a cuenta — si no,
+      estaría cancelando plata que nunca entró.</div>
+    <div style="position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:2">
+      Aplicando <b id="agr-suma">$0,00</b> de <b>${plata(d.a_cuenta)}</b>
+      <button id="agr-ok" style="margin-left:10px" disabled
+        onclick="cerrarAgregar(${pid})">Agregar</button></div>
+    ${fs.length ? tabla(['','Fecha','Comprobante','Falta pagar','Aplicar'], fs.map(f => [
+      `<input type="checkbox" style="width:auto" onchange="tildarAgr(${f.id},${f.saldo},this.checked)">`,
+      fecha(f.fecha),
+      `${esc(f.tipo)} ${esc(f.letra||'')} ${esc(f.punto_venta||'')}-${esc(f.numero||'')}`,
+      {n:plata(f.saldo)},
+      `<input id="agr-${f.id}" type="number" step="0.01" style="width:130px" disabled
+         oninput="montoAgr(${f.id},${f.saldo},this)">`]))
+      : `<div class="vacio">Esta entidad no tiene ${esc(mov)}s con saldo.</div>`}
+    <div class="row-act" style="justify-content:flex-end;margin-top:14px">
+      <button class="g" onclick="$('#modal-agr').remove()">Cerrar</button></div></div>`;
+  document.body.appendChild(el);
+  el.onclick = e => { if (e.target === el) el.remove(); };
+}
+
+function tildarAgr(id, saldo, tildado){
+  const inp = $('#agr-' + id);
+  if (tildado){
+    const queda = Math.round((+$('#modal-agr').dataset.tope - sumaAgr()) * 100) / 100;
+    const v = Math.min(saldo, Math.max(queda, 0));
+    recAplic[id] = v; inp.disabled = false; inp.value = v.toFixed(2);
+  } else { delete recAplic[id]; inp.disabled = true; inp.value = ''; }
+  pintarAgr();
+}
+function montoAgr(id, saldo, inp){
+  let v = parseFloat(inp.value) || 0;
+  if (v > saldo){ v = saldo; inp.value = saldo.toFixed(2); }
+  recAplic[id] = v; pintarAgr();
+}
+const sumaAgr = () => Math.round(Object.values(recAplic).reduce((a,b) => a + b, 0) * 100) / 100;
+
+function pintarAgr(){
+  const tope = +$('#modal-agr').dataset.tope, s = sumaAgr();
+  $('#agr-suma').textContent = plata(s);
+  $('#agr-suma').className = s > tope + 0.01 ? 'neg' : '';
+  $('#agr-ok').disabled = !(s > 0 && s <= tope + 0.01);
+}
+
+async function cerrarAgregar(pid){
+  const aplicaciones = Object.entries(recAplic).filter(([, v]) => v > 0)
+    .map(([k, v]) => ({factura_id: +k, importe: v}));
+  try{
+    const r = await post(`/api/c/pagos/${pid}/aplicaciones`, {aplicaciones});
+    $('#modal-agr')?.remove(); $('#modal-rec')?.remove();
+    toast(`${r.aplicadas} factura(s) agregadas` +
+      (r.a_cuenta > 0.01 ? ` · quedan ${plata(r.a_cuenta)} a cuenta` : ''));
+    verRecibo(pid);
+  }catch(e){ toast(e.message, true); }
+}
+
 async function verRecibo(pid){
   let d;
   try{ d = await api(`/api/c/pagos/${pid}`); }
@@ -2827,7 +3090,9 @@ async function verRecibo(pid){
   el.className = 'modal'; el.id = 'modal-rec';
   const esCobro = d.direccion === 'cobro';
   el.innerHTML = `<div class="box" style="max-width:820px">
-    <h3>${esCobro ? 'Cobranza' : 'Orden de pago'} ${esc(d.numero || '#'+d.id)}</h3>
+    <h3>${esCobro ? 'Cobranza' : 'Orden de pago'} ${esc(d.numero || '#'+d.id)}
+      ${d.anulado ? '' : `<button class="g xs" style="margin-left:8px"
+        onclick="editarCabecera(${pid},'${esc(d.fecha)}','${esc(d.numero||'')}')">Fecha y número</button>`}</h3>
     <div class="mini" style="margin-bottom:12px">${esc(d.entidad)} · ${fecha(d.fecha)} ·
       total <b>${plata(d.total)}</b>
       ${d.a_cuenta > 0.01 ? ` · <b class="amb">${plata(d.a_cuenta)} a cuenta</b>` : ''}
@@ -2846,7 +3111,9 @@ async function verRecibo(pid){
 
     <div class="panel" style="margin-bottom:14px"><div class="panel-h">
       <b>Qué facturas cancela</b>
-      <span class="mini">${plata(d.aplicado)} aplicado</span></div>
+      <span class="mini">${plata(d.aplicado)} aplicado
+        ${d.a_cuenta > 0.01 ? `<button class="xs" style="margin-left:8px"
+          onclick="agregarFacturas(${pid})">+ Agregar factura</button>` : ''}</span></div>
       ${d.aplicaciones.length ? tabla(['Comprobante','Fecha','Total','Aplica','Le queda','']
         , d.aplicaciones.map(a => [
           `${esc(a.tipo)} ${esc(a.letra||'')} ${esc(a.punto_venta||'')}-${esc(a.numero||'')}`,

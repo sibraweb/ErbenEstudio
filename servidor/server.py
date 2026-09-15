@@ -1180,6 +1180,200 @@ def api_movimiento_facturas(mid):
     })
 
 
+# ── VARIOS MOVIMIENTOS CONTRA VARIAS FACTURAS ───────────────────────────────
+# «la parte difícil es conciliar facturas» (Juan, 15/09). Y lo es porque la
+# realidad no viene de a uno: se hacen tres transferencias el mismo día para
+# pagar una factura grande, o una sola para pagar cinco chicas.
+#
+# ⚠ ACÁ EL SISTEMA NO ADIVINA NADA, Y NO ES PEREZA. Probar todas las
+# combinaciones de facturas que suman un importe encuentra SIEMPRE alguna —
+# con 20 facturas hay un millón de sumas posibles— y la que encuentra no tiene
+# por qué ser la que pasó. Elige la persona; el sistema hace la aritmética, no
+# la deja equivocarse en las reglas, y después hace el papelerío.
+
+
+def _juntar_ventana(movs):
+    """La ventana que cubre a todos los movimientos elegidos."""
+    desde = min(_correr_meses(m["fecha"], -MESES_ANTES) for m in movs)
+    hasta = max(_correr_meses(m["fecha"], MESES_DESPUES) for m in movs)
+    return desde, hasta
+
+
+@app.get("/api/c/conciliacion/lote")
+def api_lote_candidatas():
+    """Las facturas con las que se puede componer lo que suman estos movimientos.
+
+    Se agrupan POR ENTIDAD porque el recibo es de alguien: un pago no se le
+    hace «a varios proveedores», se le hace a uno. Si las transferencias fueron
+    a dos proveedores distintos, son dos recibos y hay que hacerlo dos veces —
+    que es lo que realmente pasó."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    ids = [int(x) for x in (request.args.get("movimientos") or "").split(",") if x.strip()]
+    movs = [m for m in (_de_este_cliente(con, "movimientos_banco", i, cli["id"]) for i in ids) if m]
+    if not movs:
+        con.close()
+        return jsonify({"error": "no viene ningún movimiento de este cliente"}), 400
+
+    signos = {1 if _n(m["importe"]) > 0 else -1 for m in movs}
+    if len(signos) > 1:
+        con.close()
+        return jsonify({"error": "hay movimientos que entran y otros que salen: "
+                                 "no pueden explicarse con el mismo recibo"}), 400
+    total = round(sum(abs(_n(m["importe"])) for m in movs), 2)
+    quiero = "compra" if signos == {-1} else "venta"
+    desde, hasta = _juntar_ventana(movs)
+
+    todas = filas(con.execute(
+        "SELECT f.*, e.cuit, e.id AS entidad, m.razon_social, "
+        "  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a "
+        "            WHERE a.factura_id=f.id),0) AS pagado "
+        "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit "
+        "WHERE f.cliente_id=? AND f.mov=? AND f.fecha BETWEEN ? AND ? "
+        "ORDER BY f.fecha", (cli["id"], quiero, desde, hasta)))
+
+    grupos = {}
+    for f in todas:
+        f["saldo"] = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
+        if f["saldo"] <= 0.01:
+            continue              # ya está explicada: no se ofrece de nuevo
+        g = grupos.setdefault(f["entidad"], {
+            "entidad_id": f["entidad"], "cuit": f["cuit"],
+            "razon_social": f["razon_social"], "facturas": [], "saldo_total": 0.0})
+        g["facturas"].append(f)
+        g["saldo_total"] = round(g["saldo_total"] + f["saldo"], 2)
+
+    for g in grupos.values():
+        # Si lo que le falta a una entidad no llega al total, con esa sola no
+        # se puede: se dice acá para que no se pierda buscándola renglón a
+        # renglón.
+        g["alcanza"] = g["saldo_total"] >= total - 0.01
+        g["exacta"] = [f["id"] for f in g["facturas"] if abs(f["saldo"] - total) < 0.01]
+
+    con.close()
+    return jsonify({
+        "movimientos": [{"id": m["id"], "fecha": m["fecha"], "importe": _n(m["importe"]),
+                         "descripcion": m["descripcion"]} for m in movs],
+        "total": total, "busca": quiero, "desde": desde, "hasta": hasta,
+        "grupos": sorted(grupos.values(), key=lambda g: (not g["alcanza"], g["razon_social"] or "")),
+        "nota": "Elegí las facturas hasta llegar a " + f"{total:,.2f}" + ". El recibo es de "
+                "UNA entidad: si las transferencias fueron a dos proveedores, son dos recibos.",
+    })
+
+
+@app.post("/api/c/conciliacion/lote")
+def api_lote_aplicar():
+    """Cierra el lote: un recibo, sus aplicaciones y los movimientos conciliados.
+
+    Espera `movimientos: [id]` y `aplicaciones: [{factura_id, importe}]`.
+
+    Las reglas que se verifican acá —y no en la pantalla— son las que hacen que
+    la contabilidad no quede torcida:
+
+    · todas las facturas de la MISMA entidad (el recibo es de alguien);
+    · el signo tiene que dar: un débito paga compras, un crédito cobra ventas;
+    · ninguna aplicación puede pasarse de lo que le falta a su factura;
+    · y la suma aplicada tiene que dar EXACTO lo que suman los movimientos.
+
+    ⚠ Lo último no es prolijidad: si se aplica de menos, la diferencia se
+    pierde —el banco queda explicado y la plata no fue a ningún lado— y si se
+    aplica de más, aparece un pago que nunca existió."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    b = request.get_json(force=True)
+    ids = [int(x) for x in (b.get("movimientos") or [])]
+    movs = [m for m in (_de_este_cliente(con, "movimientos_banco", i, cli["id"]) for i in ids) if m]
+    aplic = [a for a in (b.get("aplicaciones") or []) if _n(a.get("importe")) > 0]
+    if not movs or not aplic:
+        con.close()
+        return jsonify({"error": "hacen falta movimientos y facturas"}), 400
+
+    signos = {1 if _n(m["importe"]) > 0 else -1 for m in movs}
+    if len(signos) > 1:
+        con.close()
+        return jsonify({"error": "no se mezclan movimientos que entran con los que salen"}), 400
+    total_mov = round(sum(abs(_n(m["importe"])) for m in movs), 2)
+
+    entidades, direcciones = set(), set()
+    for a in aplic:
+        f = con.execute(
+            "SELECT f.*, e.cuit, e.id AS entidad, "
+            "  COALESCE((SELECT SUM(x.importe) FROM pago_aplicaciones x "
+            "            WHERE x.factura_id=f.id),0) AS pagado "
+            "FROM facturas f JOIN entidades_cliente e ON e.id=f.entidad_id "
+            "WHERE f.id=? AND f.cliente_id=?", (a.get("factura_id"), cli["id"])).fetchone()
+        if not f:
+            con.close()
+            return jsonify({"error": f"la factura {a.get('factura_id')} no es de este cliente"}), 400
+        saldo = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
+        if _n(a["importe"]) > saldo + 0.01:
+            con.close()
+            return jsonify({"error": f"a la factura {f['tipo']} {f['numero'] or ''} le faltan "
+                                     f"{saldo:,.2f} y se le quieren aplicar "
+                                     f"{_n(a['importe']):,.2f}"}), 400
+        entidades.add(f["entidad"])
+        direcciones.add(f["mov"])
+        a["_f"] = f
+
+    if len(entidades) > 1:
+        con.close()
+        return jsonify({"error": "las facturas son de entidades distintas: un recibo es de "
+                                 "UNA entidad, hacelo en dos veces"}), 400
+    if len(direcciones) > 1:
+        con.close()
+        return jsonify({"error": "no se mezclan compras con ventas en el mismo recibo"}), 400
+    quiero = "compra" if signos == {-1} else "venta"
+    if direcciones != {quiero}:
+        con.close()
+        return jsonify({"error": f"los movimientos son de {'salida' if quiero == 'compra' else 'entrada'} "
+                                 f"y las facturas son de {direcciones.pop()}"}), 400
+
+    total_aplic = round(sum(_n(a["importe"]) for a in aplic), 2)
+    if abs(total_aplic - total_mov) > 0.01:
+        con.close()
+        return jsonify({"error": f"los movimientos suman {total_mov:,.2f} y las facturas "
+                                 f"{total_aplic:,.2f}: tienen que dar igual"}), 400
+
+    entidad_id = entidades.pop()
+    cuit = aplic[0]["_f"]["cuit"]
+    direccion = "cobro" if quiero == "venta" else "pago"
+    numero = "AUTO-" + "-".join(str(m["id"]) for m in movs[:3])
+    cur = con.execute(
+        "INSERT INTO pagos (cliente_id, entidad_id, direccion, fecha, numero, total, nota) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (cli["id"], entidad_id, direccion, max(m["fecha"] for m in movs), numero,
+         total_aplic, f"recibo por {len(movs)} movimiento(s) del banco"))
+    pago_id = cur.lastrowid
+    for m in movs:
+        con.execute("INSERT INTO pago_medios (pago_id, medio, importe, movimiento_id) "
+                    "VALUES (?,'transferencia',?,?)", (pago_id, abs(_n(m["importe"])), m["id"]))
+        con.execute(
+            "INSERT OR REPLACE INTO conciliaciones (cliente_id, movimiento_id, tipo, cheque_id, "
+            " factura_id, pago_id, metodo, motivo, fecha) VALUES (?,?,'pago',NULL,NULL,?,'manual',?,?)",
+            (cli["id"], m["id"], pago_id,
+             b.get("motivo") or f"lote de {len(movs)} movimiento(s) contra {len(aplic)} factura(s)",
+             _hoy()))
+        # El banco se nutre: queda con el CUIT y con el número de recibo, que
+        # es lo que se pedía — «que el banco termine con transferencia, CUIT,
+        # factura y número de recibo».
+        con.execute("UPDATE movimientos_banco SET conciliado=1, cuit_contraparte=?, pago_id=? "
+                    "WHERE id=?", (cuit, pago_id, m["id"]))
+    for a in aplic:
+        con.execute("INSERT INTO pago_aplicaciones (pago_id, factura_id, importe) VALUES (?,?,?)",
+                    (pago_id, a["_f"]["id"], round(_n(a["importe"]), 2)))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "pago_id": pago_id, "total": total_aplic,
+                    "movimientos": len(movs), "facturas": len(aplic)})
+
+
 @app.post("/api/c/movimientos/<int:mid>/clasificar")
 def api_clasificar_uno(mid):
     """Clasificar un movimiento a mano, y ofrecer hacerlo regla."""
@@ -1527,10 +1721,23 @@ def api_movimientos():
     if err:
         con.close()
         return err
+    # ⚠ EL RENGLÓN DEL BANCO TIENE QUE CERRAR LA HISTORIA (Juan, 15/09): *«la
+    # idea es que el banco termine con transferencia, CUIT, factura y número de
+    # recibo que genera el sistema»*. Hasta acá devolvía el movimiento pelado y
+    # la pantalla mostraba un campo `recibo` que NUNCA venía: la columna «qué
+    # lo explica» decía «—» incluso con el recibo hecho y la factura aplicada.
     q = ("SELECT m.*, c.banco, c.numero AS cuenta_numero, "
-         "  co.tipo AS conciliado_con, co.motivo AS conciliado_motivo "
+         "  co.tipo AS conciliado_con, co.motivo AS conciliado_motivo, "
+         "  p.numero AS recibo, p.total AS recibo_total, "
+         "  (SELECT me.razon_social FROM entidades_cliente ec "
+         "     JOIN maestro_entidades me ON me.cuit=ec.cuit WHERE ec.id=p.entidad_id) AS contraparte, "
+         "  (SELECT GROUP_CONCAT(f.tipo || ' ' || COALESCE(f.punto_venta,'') || '-' "
+         "                       || COALESCE(f.numero,''), ' · ') "
+         "     FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id "
+         "    WHERE a.pago_id=m.pago_id) AS facturas "
          "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
-         "LEFT JOIN conciliaciones co ON co.movimiento_id=m.id WHERE m.cliente_id=?")
+         "LEFT JOIN conciliaciones co ON co.movimiento_id=m.id "
+         "LEFT JOIN pagos p ON p.id=m.pago_id WHERE m.cliente_id=?")
     args = [cli["id"]]
     if request.args.get("cuenta_id"):
         q += " AND m.cuenta_id=?"
@@ -3233,6 +3440,110 @@ def api_desimputar(pid, fid):
     con.commit()
     con.close()
     return jsonify({"ok": True, "liberado": _n(fila["importe"])})
+
+
+@app.post("/api/c/pagos/<int:pid>/aplicaciones")
+def api_pago_agregar_aplicaciones(pid):
+    """Sumarle facturas a un recibo que ya existe.
+
+    Faltaba la mitad del par: se podía SOLTAR una factura de un recibo pero no
+    agregarle otra, así que corregir «le apliqué la factura equivocada» obligaba
+    a anular y rehacer, perdiendo el número. Con esto se suelta una y se pone la
+    otra, y el recibo sigue siendo el mismo papel.
+
+    ⚠ No se puede aplicar más de lo que el recibo tiene A CUENTA. Si se
+    aplicara de más, el recibo estaría cancelando plata que nunca entró — y la
+    cuenta corriente mostraría al proveedor cobrado sin que exista el cobro."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    p = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not p:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    if p["anulado"]:
+        con.close()
+        return jsonify({"error": "este recibo está anulado"}), 400
+
+    aplicado = _n(con.execute("SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones "
+                              "WHERE pago_id=?", (pid,)).fetchone()[0])
+    disponible = round(_n(p["total"]) - aplicado, 2)
+    quiero = "venta" if p["direccion"] == "cobro" else "compra"
+
+    nuevas = [a for a in (request.get_json(force=True).get("aplicaciones") or [])
+              if _n(a.get("importe")) > 0]
+    if not nuevas:
+        con.close()
+        return jsonify({"error": "no viene ninguna factura"}), 400
+
+    total_nuevo = round(sum(_n(a["importe"]) for a in nuevas), 2)
+    if total_nuevo > disponible + 0.01:
+        con.close()
+        return jsonify({"error": f"al recibo le quedan {disponible:,.2f} sin aplicar y se le "
+                                 f"quieren aplicar {total_nuevo:,.2f}"}), 400
+
+    for a in nuevas:
+        f = con.execute(
+            "SELECT f.*, COALESCE((SELECT SUM(x.importe) FROM pago_aplicaciones x "
+            "  WHERE x.factura_id=f.id),0) AS pagado FROM facturas f "
+            "WHERE f.id=? AND f.cliente_id=?", (a.get("factura_id"), cli["id"])).fetchone()
+        if not f:
+            con.close()
+            return jsonify({"error": f"la factura {a.get('factura_id')} no es de este cliente"}), 400
+        if f["entidad_id"] != p["entidad_id"]:
+            con.close()
+            return jsonify({"error": "esa factura es de otra entidad: un recibo es de UNA"}), 400
+        if f["mov"] != quiero:
+            con.close()
+            return jsonify({"error": f"este recibo es un {p['direccion']} y esa factura es "
+                                     f"una {f['mov']}"}), 400
+        saldo = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
+        if _n(a["importe"]) > saldo + 0.01:
+            con.close()
+            return jsonify({"error": f"a la factura {f['tipo']} {f['numero'] or ''} le faltan "
+                                     f"{saldo:,.2f}"}), 400
+        con.execute("INSERT INTO pago_aplicaciones (pago_id, factura_id, importe) VALUES (?,?,?)",
+                    (pid, f["id"], round(_n(a["importe"]), 2)))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True, "aplicadas": len(nuevas),
+                    "a_cuenta": round(disponible - total_nuevo, 2)})
+
+
+@app.post("/api/c/pagos/<int:pid>/cabecera")
+def api_pago_cabecera(pid):
+    """La fecha, el número y la nota del recibo.
+
+    La fecha es la que más se equivoca —se carga el día que uno lo ve, no el
+    día que pasó— y hasta acá había que anular el recibo entero para moverla.
+
+    ⚠ NO se toca la entidad ni la dirección: cambiar de quién es un recibo ya
+    aplicado dejaría las facturas de otro canceladas. Para eso se anula."""
+    con = db()
+    cli, err = cliente_activo(con)
+    if err:
+        con.close()
+        return err
+    p = _de_este_cliente(con, "pagos", pid, cli["id"])
+    if not p:
+        con.close()
+        return jsonify({"error": "comprobante inexistente para este cliente"}), 404
+    if p["anulado"]:
+        con.close()
+        return jsonify({"error": "este recibo está anulado"}), 400
+    b = request.get_json(force=True)
+    fecha = (b.get("fecha") or p["fecha"])[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha):
+        con.close()
+        return jsonify({"error": "la fecha va en formato AAAA-MM-DD"}), 400
+    con.execute("UPDATE pagos SET fecha=?, numero=?, nota=? WHERE id=?",
+                (fecha, (b.get("numero") or p["numero"] or "").strip() or None,
+                 b.get("nota") if b.get("nota") is not None else p["nota"], pid))
+    con.commit()
+    con.close()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/c/pagos/<int:pid>/anular")
