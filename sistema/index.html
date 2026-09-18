@@ -1853,8 +1853,8 @@ async function bMovs(){
       </div></div>
       ${ms.length ? tabla(['','Fecha','Banco','Concepto','Clasificación','CUIT','Importe','Qué lo explica','Estado',''],
         ms.map(m => [
-          m.conciliado ? '' : `<input type="checkbox" style="width:auto" ${loteSel.has(m.id)?'checked':''}
-             onclick="event.stopPropagation()" onchange="tildarMov(${m.id},${m.importe})">`,
+          abreRecibo(m) ? `<input type="checkbox" style="width:auto" ${loteSel.has(m.id)?'checked':''}
+             onclick="event.stopPropagation()" onchange="tildarMov(${m.id},${m.importe < 0 ? -m.sin_recibo : m.sin_recibo})">` : '',
           fecha(m.fecha), esc(m.banco),
           esc((m.descripcion||'sin descripción').slice(0,44)),
           m.rango ? `${esc(m.rango)}<div class="mini">${esc(m.subrango||'')}</div>`
@@ -1866,12 +1866,44 @@ async function bMovs(){
                 m.facturas ? `<div class="mini">${esc(m.facturas)}</div>` : ''}`
             : (m.conciliado_con ? `<span class="mini">${esc(m.conciliado_con)}</span>`
                : '<span class="mini">—</span>'),
-          m.conciliado ? '<span class="badge b-ok">conciliado</span>' : '<span class="badge b-warn">sin registrar</span>',
-          m.conciliado ? '' : `<button class="g xs" onclick="event.stopPropagation();buscarFactura(${m.id})">Buscar factura</button>`]),
+          estadoMov(m),
+          abreRecibo(m)
+            ? `<button class="g xs" onclick="event.stopPropagation();buscarFactura(${m.id})">Buscar factura</button>`
+            : (m.estado_banco === 'parcial' && m.pago_id
+               ? `<button class="g xs" onclick="event.stopPropagation();agregarFacturas(${m.pago_id})">Seguir imputando</button>`
+               : '')]),
         {onclick: i => `verCadena('banco',${ms[i].id})`})
         : '<div class="vacio">Sin movimientos. Los carga el job del banco o se agregan a mano.</div>'}
     </div>`);
 }
+
+/* ── EL ESTADO DE UN MOVIMIENTO ──
+   Traído del ERP (18/09). Dos cosas que la columna mezclaba:
+
+   · CONCILIADO NO ES IMPUTADO. Estar en un recibo y que ese recibo cancele
+     facturas son dos eslabones. Allá un depósito de 13,6 millones decía
+     «conciliado» con 3 imputados, y los 10,5 restantes no los veía nadie.
+   · LO QUE NO SE CONCILIA NO ES UN PENDIENTE. Impuestos, gastos del banco y
+     pases entre cuentas propias no tienen una factura del otro lado: mostrarlos
+     «sin registrar» con un tilde es decir que falta algo que no va a existir.
+     En el primer extracto real eran 220 de 435 renglones. */
+const NO_CONCILIA = {'Impuesto':'impuesto', 'Gasto Bancario':'gasto del banco',
+                     'Transferencia interna':'cuenta propia'};
+
+function estadoMov(m){
+  if (m.estado_banco === 'no_se_concilia')
+    return `<span class="mini" style="opacity:.7">${esc(NO_CONCILIA[m.rango] || m.rango)}</span>`;
+  if (m.estado_banco === 'parcial')
+    return `<span class="badge b-warn">conciliado</span>
+      <div class="mini amb">falta imputar ${plata(m.falta_imputar)}</div>`;
+  if (m.estado_banco === 'conciliado') return '<span class="badge b-ok">conciliado</span>';
+  return '<span class="badge b-warn">sin registrar</span>';
+}
+// ¿A este movimiento todavía le falta ponerse en un recibo? Entonces se tilda
+// y se busca factura. Si ya está entero en un recibo que imputa de menos, lo
+// que corresponde es SEGUIR contra ese recibo — no hacer otro con la misma
+// plata, que es cómo una transferencia termina contada dos veces.
+const abreRecibo = m => m.estado_banco !== 'no_se_concilia' && (m.sin_recibo || 0) > 0.01;
 
 /* ── VARIOS MOVIMIENTOS CONTRA VARIAS FACTURAS ──
    «la parte difícil es conciliar facturas» (Juan, 15/09). Y lo es porque la
@@ -1884,6 +1916,8 @@ async function bMovs(){
    reglas, y después hace el papelerío. */
 const loteSel = new Map();     // id → importe
 
+// Lo que se suma es lo que le FALTA a cada movimiento, no su importe: uno ya
+// repartido entre recibos solo aporta el resto.
 function loteTotal(){
   let t = 0; loteSel.forEach(v => t += Math.abs(v)); return t;
 }
@@ -1914,6 +1948,10 @@ async function probarLote(){
       Se muestran las que tienen saldo entre el ${fecha(d.desde)} y el ${fecha(d.hasta)}.
       <br><b>El recibo es de UNA entidad</b>: si las transferencias fueron a dos proveedores
       distintos, son dos recibos y hay que hacerlo dos veces — porque eso es lo que pasó.</div>
+    ${d.admite_parcial ? `<div class="aviso" style="border-left-color:var(--ok)">
+      <b>Se puede asignar una parte.</b> Si este movimiento trae plata de varios clientes —un
+      depósito en efectivo, por ejemplo— elegí las facturas de UNO, confirmá, y el resto queda
+      abierto para hacer el recibo del otro.</div>` : ''}
     <div style="position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:2">
       Aplicado <b id="lote-suma">$0,00</b> de <b>${plata(d.total)}</b>
       <span id="lote-falta" class="mini"></span>
@@ -1941,6 +1979,7 @@ async function probarLote(){
       <button class="g" onclick="$('#modal-lote').remove()">Cerrar</button></div></div>`;
   document.body.appendChild(el);
   el.dataset.total = d.total;
+  el.dataset.parcial = d.admite_parcial ? '1' : '';
   el.onclick = e => { if (e.target === el) el.remove(); };
 }
 
@@ -1971,8 +2010,12 @@ function pintarSumaLote(){
   $('#lote-suma').textContent = plata(s);
   $('#lote-falta').textContent = Math.abs(dif) < 0.01 ? '· cierra' :
     (dif > 0 ? `· faltan ${plata(dif)}` : `· sobran ${plata(-dif)}`);
-  $('#lote-falta').className = 'mini ' + (Math.abs(dif) < 0.01 ? 'pos' : 'neg');
-  $('#lote-ok').disabled = Math.abs(dif) >= 0.01;
+  const parcial = !!$('#modal-lote').dataset.parcial;
+  const cierra = Math.abs(dif) < 0.01, parte = parcial && s > 0.01 && dif > 0.01;
+  $('#lote-falta').className = 'mini ' + (cierra ? 'pos' : (parte ? 'amb' : 'neg'));
+  if (parte) $('#lote-falta').textContent = `· quedan ${plata(dif)} abiertos para otro recibo`;
+  $('#lote-ok').disabled = !(cierra || parte);
+  $('#lote-ok').textContent = parte ? 'Asignar esta parte' : 'Imputar y generar el recibo';
 }
 
 async function cerrarLote(){
@@ -1983,7 +2026,8 @@ async function cerrarLote(){
       {movimientos: [...loteSel.keys()], aplicaciones});
     $('#modal-lote')?.remove();
     loteSel.clear(); loteAplic = {};
-    toast(`Recibo #${r.pago_id}: ${r.movimientos} movimiento(s) contra ${r.facturas} factura(s)`);
+    toast(`Recibo #${r.pago_id}: ${r.movimientos} movimiento(s) contra ${r.facturas} factura(s)` +
+      (r.queda > 0.01 ? ` · quedan ${plata(r.queda)} abiertos` : ''));
     vBancos();
   }catch(e){ toast(e.message, true); }
 }
@@ -2010,6 +2054,16 @@ async function buscarFactura(mid){
     <div class="mini" style="margin-bottom:10px">
       ${fecha(m.fecha)} · ${esc(m.descripcion||'sin descripción')} ·
       <b class="${m.importe<0?'neg':'pos'}">${plata(m.importe)}</b></div>
+    ${d.recibos && d.recibos.length ? `<div class="panel" style="border-left:3px solid var(--ok)">
+      <div class="panel-h"><b>Ya hay un recibo cargado por ${plata(d.importe)}</b></div>
+      <div class="panel-b"><div class="mini" style="margin-bottom:8px">Antes de hacer otro,
+        mirá si es este: <b>si ya se cargó a mano, se ata el banco a ese recibo</b> y no se crea
+        uno nuevo — si no, la misma plata queda contada dos veces.</div>
+      ${tabla(['Recibo','Fecha','Entidad','Total',''], d.recibos.map(p => [
+        `<b>${esc(p.numero || '#'+p.id)}</b>`, fecha(p.fecha), esc(p.razon_social),
+        {n:plata(p.total)},
+        `<button class="xs" onclick="atarRecibo(${mid},${p.id})">Es este</button>`]))}</div>
+    </div>` : ''}
     <div class="aviso">Se buscan <b>${esc(d.busca)}s por ${plata(d.importe)}</b> entre el
       ${fecha(d.desde)} y el ${fecha(d.hasta)} — ${d.meses_antes} meses antes y
       ${d.meses_despues} después del movimiento.<br>Se compara contra <b>lo que falta pagar</b>
@@ -2036,6 +2090,16 @@ async function buscarFactura(mid){
       <button class="g" onclick="$('#modal-fac').remove()">Cerrar</button></div></div>`;
   document.body.appendChild(el);
   el.onclick = e => { if (e.target === el) el.remove(); };
+}
+
+async function atarRecibo(mid, pid){
+  try{
+    await post('/api/c/conciliacion/manual',
+      {movimiento_id: mid, tipo: 'pago', id: pid, motivo: 'el recibo ya estaba cargado'});
+    $('#modal-fac')?.remove();
+    toast('Atado al recibo que ya existía — no se creó otro');
+    vBancos();
+  }catch(e){ toast(e.message, true); }
 }
 
 async function imputarFactura(mid, fid){
@@ -3014,8 +3078,9 @@ let recAplic = {};
 async function agregarFacturas(pid){
   const d = await api(`/api/c/pagos/${pid}`);
   const mov = d.direccion === 'cobro' ? 'venta' : 'compra';
+  // Las NC nunca: se usan como medio de un recibo, no reciben plata.
   const fs = (await api('/api/c/facturas?mov=' + mov)).filter(f =>
-    f.entidad_id === d.entidad_id && f.saldo > 0.01);
+    f.entidad_id === d.entidad_id && f.saldo > 0.01 && f.tipo !== 'NC');
   recAplic = {};
   const viejo = $('#modal-agr'); if (viejo) viejo.remove();
   const el = document.createElement('div');

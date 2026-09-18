@@ -940,12 +940,16 @@ def api_cuentas_alta():
 RANGOS = ["Ingreso", "Egreso", "Impuesto", "Gasto Bancario", "Transferencia interna"]
 
 
-def _aplicar_reglas(con, cid, solo=None):
+def _aplicar_reglas(con, cid, solo=None, movimientos=None):
     """Aplica las reglas sobre los movimientos del cliente.
 
     ⚠ Se aplican de MAYOR a MENOR prioridad para que la de prioridad más baja
     (número menor) sea la última en escribir y por lo tanto GANE. Al revés, la
     regla general le pisaba el resultado a la específica.
+
+    `movimientos` restringe a esos ids: es lo que se usa al CARGAR, para que
+    las reglas clasifiquen lo que entra sin volver a pasar por encima de lo
+    que alguien ya había corregido a mano en los meses anteriores.
 
     Devuelve cuántos movimientos cambiaron de clasificación."""
     q = "SELECT * FROM reglas_clasificacion WHERE cliente_id=? AND activa=1"
@@ -953,14 +957,22 @@ def _aplicar_reglas(con, cid, solo=None):
     if solo:
         q += " AND id=?"
         args.append(solo)
+    solo_estos, extra = "", []
+    if movimientos is not None:
+        if not movimientos:
+            return 0
+        solo_estos = f" AND id IN ({','.join('?' * len(movimientos))})"
+        extra = list(movimientos)
     cambiados = 0
     for r in con.execute(q + " ORDER BY prioridad DESC, id DESC", args).fetchall():
         cur = con.execute(
             "UPDATE movimientos_banco SET rango=?, subrango=?, tributo=?, jurisdiccion=? "
             "WHERE cliente_id=? AND LOWER(COALESCE(descripcion,'')) LIKE '%'||LOWER(?)||'%' "
+            + solo_estos + " "
             "AND (COALESCE(rango,'') <> ? OR COALESCE(subrango,'') <> ? "
             "     OR COALESCE(tributo,'') <> ? OR COALESCE(jurisdiccion,'') <> ?)",
             (r["rango"], r["subrango"], r["tributo"], r["jurisdiccion"], cid, r["patron"],
+             *extra,
              r["rango"], r["subrango"], r["tributo"] or "", r["jurisdiccion"] or ""))
         cambiados += cur.rowcount
     return cambiados
@@ -1081,6 +1093,34 @@ def api_cuenta_saldo_inicial(cid_cta):
     return jsonify({"ok": True})
 
 
+# ── LO QUE SE LE PUEDE IMPUTAR A UNA FACTURA DESDE EL BANCO ─────────────────
+# Traído del ERP (commit b98b7ca, Juan 18/09): *«pongo imputar a factura y me
+# aparecen facturas que ya están pagadas con nota de crédito y aparecen notas
+# de crédito»*. Allá era una tercera puerta al saldo con su propia cuenta;
+# acá era peor: `abs(total)` convertía una NC de −3.500.000 en «$3.500.000 por
+# pagar», y un débito de ese importe la proponía como candidata. Está en la
+# base real: una NC C de compra de RODRIGUEZ por exactamente eso.
+#
+# Dos reglas, las dos del ERP:
+#   · una NC se aplica como MEDIO de un recibo, nunca como destino de plata
+#     del banco — afuera, decidido por el TIPO y no por el signo guardado:
+#     confiar en el signo es confiar en que todos los parsers usen la misma
+#     convención (commit d02deda);
+#   · solo se ofrece lo que todavía SE DEBE. Un saldo negativo es una factura
+#     pagada de más, y a esa no se le aplica más plata.
+# Se usa en los cuatro lugares que proponen facturas para imputar: si cada uno
+# calculara el saldo a su manera, darían distinto.
+TIPOS_NO_IMPUTABLES = ("NC",)
+
+
+def _saldo_imputable(f):
+    """Lo que todavía se debe de la factura, o None si no se le aplica plata."""
+    if (f["tipo"] or "").upper() in TIPOS_NO_IMPUTABLES:
+        return None
+    saldo = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
+    return saldo if saldo > 0.01 else None
+
+
 # ── BUSCAR LA FACTURA POR MONTO ─────────────────────────────────────────────
 # La ventana la dictó Juan (15/09): **4 meses antes y 1 mes después** del
 # movimiento. No es un número redondo puesto al azar — es el tiempo real que
@@ -1127,12 +1167,26 @@ def api_movimiento_facturas(mid):
     if err:
         con.close()
         return err
-    mov = _de_este_cliente(con, "movimientos_banco", mid, cli["id"])
+    mov = _movimiento_con_estado(con, cli["id"], mid)
     if not mov:
         con.close()
         return jsonify({"error": "movimiento inexistente para este cliente"}), 404
+    if mov["estado_banco"] == "no_se_concilia":
+        con.close()
+        return jsonify({"error": f"es un movimiento de «{mov['rango']}»: no tiene una "
+                                 "factura del otro lado"}), 400
 
-    imp = round(abs(_n(mov["importe"])), 2)
+    # ⚠ Se busca por lo que FALTA ponerle en un recibo, no por el importe
+    # entero: un depósito del que ya se asignó una parte a un cliente sigue
+    # abierto por el resto — y el resto puede ser de otro (ERP 51c5e89:
+    # *«entró efectivo al banco y parte es de PETRIETTE y parte de otro
+    # cliente»*).
+    imp = round(mov["sin_recibo"] if mov.get("sin_recibo") is not None
+                else abs(_n(mov["importe"])), 2)
+    if imp <= 0.01:
+        con.close()
+        return jsonify({"error": "todo este movimiento ya está en recibos — si falta "
+                                 "imputar, es contra el recibo que ya existe"}), 400
     desde = _correr_meses(mov["fecha"], -MESES_ANTES)
     hasta = _correr_meses(mov["fecha"], MESES_DESPUES)
     quiero = "compra" if _n(mov["importe"]) < 0 else "venta"
@@ -1150,8 +1204,8 @@ def api_movimiento_facturas(mid):
     digitos = re.sub(r"\D", "", desc)
     coinciden = []
     for f in todas:
-        f["saldo"] = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
-        if abs(f["saldo"] - imp) > 0.01:
+        f["saldo"] = _saldo_imputable(f)
+        if f["saldo"] is None or abs(f["saldo"] - imp) > 0.01:
             continue
         # No hace falta que el CUIT esté para proponerla —si estuviera, la
         # conciliación automática ya la habría agarrado— pero si aparece se
@@ -1166,6 +1220,23 @@ def api_movimiento_facturas(mid):
     # cercanía: la más próxima al movimiento es la candidata más probable.
     coinciden.sort(key=lambda f: (not (f["por_cuit"] or f["por_nombre"]),
                                   f["dias"] if f["dias"] is not None else 9999))
+
+    # ⚠ EL RECIBO QUE YA EXISTE MANDA (ERP a647a5c). Antes de fabricar un
+    # recibo contra una factura, se mira si ya hay uno CARGADO A MANO por ese
+    # importe que todavía no está atado a ningún movimiento. Si se ignora, la
+    # misma plata entra dos veces —prolija y conciliada— y el proveedor queda
+    # pagado dos veces en la cuenta corriente.
+    direccion = "pago" if quiero == "compra" else "cobro"
+    recibos = filas(con.execute(
+        "SELECT p.id, p.numero, p.fecha, p.total, m.razon_social FROM pagos p "
+        "JOIN entidades_cliente e ON e.id=p.entidad_id "
+        "JOIN maestro_entidades m ON m.cuit=e.cuit "
+        "WHERE p.cliente_id=? AND p.direccion=? AND COALESCE(p.anulado,0)=0 "
+        "  AND ABS(p.total - ?) < 0.01 AND p.fecha BETWEEN ? AND ? "
+        "  AND NOT EXISTS (SELECT 1 FROM pago_medios x WHERE x.pago_id=p.id "
+        "                  AND (x.movimiento_id IS NOT NULL OR x.cheque_id IS NOT NULL)) "
+        "  AND NOT EXISTS (SELECT 1 FROM conciliaciones c WHERE c.pago_id=p.id) "
+        "ORDER BY p.fecha DESC", (cli["id"], direccion, imp, desde, hasta)))
     con.close()
     return jsonify({
         "movimiento": {"id": mov["id"], "fecha": mov["fecha"],
@@ -1174,6 +1245,7 @@ def api_movimiento_facturas(mid):
         "busca": quiero, "importe": imp, "desde": desde, "hasta": hasta,
         "meses_antes": MESES_ANTES, "meses_despues": MESES_DESPUES,
         "coinciden": coinciden,
+        "recibos": recibos,
         "en_la_ventana": len(todas),
         "nota": f"{quiero.capitalize()}s por {imp:,.2f} entre {desde} y {hasta}. "
                 "Se compara contra lo que falta pagar de cada una.",
@@ -1213,17 +1285,27 @@ def api_lote_candidatas():
         con.close()
         return err
     ids = [int(x) for x in (request.args.get("movimientos") or "").split(",") if x.strip()]
-    movs = [m for m in (_de_este_cliente(con, "movimientos_banco", i, cli["id"]) for i in ids) if m]
+    movs = [m for m in (_movimiento_con_estado(con, cli["id"], i) for i in ids) if m]
     if not movs:
         con.close()
         return jsonify({"error": "no viene ningún movimiento de este cliente"}), 400
+    raros = [m for m in movs if m["estado_banco"] == "no_se_concilia"]
+    if raros:
+        con.close()
+        return jsonify({"error": f"«{raros[0]['descripcion']}» es de {raros[0]['rango']}: "
+                                 "no tiene una factura del otro lado"}), 400
 
     signos = {1 if _n(m["importe"]) > 0 else -1 for m in movs}
     if len(signos) > 1:
         con.close()
         return jsonify({"error": "hay movimientos que entran y otros que salen: "
                                  "no pueden explicarse con el mismo recibo"}), 400
-    total = round(sum(abs(_n(m["importe"])) for m in movs), 2)
+    # Lo que FALTA asignar de cada uno, no su importe: un depósito del que ya
+    # salió un recibo para un cliente sigue abierto por el resto.
+    total = round(sum(max(m["sin_recibo"], 0) for m in movs), 2)
+    if total <= 0.01:
+        con.close()
+        return jsonify({"error": "estos movimientos ya están enteros en recibos"}), 400
     quiero = "compra" if signos == {-1} else "venta"
     desde, hasta = _juntar_ventana(movs)
 
@@ -1238,9 +1320,9 @@ def api_lote_candidatas():
 
     grupos = {}
     for f in todas:
-        f["saldo"] = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
-        if f["saldo"] <= 0.01:
-            continue              # ya está explicada: no se ofrece de nuevo
+        f["saldo"] = _saldo_imputable(f)
+        if f["saldo"] is None:
+            continue              # NC, o ya explicada: no se ofrece
         g = grupos.setdefault(f["entidad"], {
             "entidad_id": f["entidad"], "cuit": f["cuit"],
             "razon_social": f["razon_social"], "facturas": [], "saldo_total": 0.0})
@@ -1257,8 +1339,12 @@ def api_lote_candidatas():
     con.close()
     return jsonify({
         "movimientos": [{"id": m["id"], "fecha": m["fecha"], "importe": _n(m["importe"]),
+                         "sin_recibo": m["sin_recibo"],
                          "descripcion": m["descripcion"]} for m in movs],
         "total": total, "busca": quiero, "desde": desde, "hasta": hasta,
+        # Con UN solo movimiento se puede asignar una parte: el resto queda
+        # abierto para otro recibo — de otra entidad, si hace falta.
+        "admite_parcial": len(movs) == 1,
         "grupos": sorted(grupos.values(), key=lambda g: (not g["alcanza"], g["razon_social"] or "")),
         "nota": "Elegí las facturas hasta llegar a " + f"{total:,.2f}" + ". El recibo es de "
                 "UNA entidad: si las transferencias fueron a dos proveedores, son dos recibos.",
@@ -1289,7 +1375,7 @@ def api_lote_aplicar():
         return err
     b = request.get_json(force=True)
     ids = [int(x) for x in (b.get("movimientos") or [])]
-    movs = [m for m in (_de_este_cliente(con, "movimientos_banco", i, cli["id"]) for i in ids) if m]
+    movs = [m for m in (_movimiento_con_estado(con, cli["id"], i) for i in ids) if m]
     aplic = [a for a in (b.get("aplicaciones") or []) if _n(a.get("importe")) > 0]
     if not movs or not aplic:
         con.close()
@@ -1299,7 +1385,11 @@ def api_lote_aplicar():
     if len(signos) > 1:
         con.close()
         return jsonify({"error": "no se mezclan movimientos que entran con los que salen"}), 400
-    total_mov = round(sum(abs(_n(m["importe"])) for m in movs), 2)
+    if any(m["estado_banco"] == "no_se_concilia" for m in movs):
+        con.close()
+        return jsonify({"error": "hay un movimiento de impuesto, gasto bancario o cuenta "
+                                 "propia: esos no se imputan a facturas"}), 400
+    total_mov = round(sum(max(m["sin_recibo"], 0) for m in movs), 2)
 
     entidades, direcciones = set(), set()
     for a in aplic:
@@ -1312,7 +1402,11 @@ def api_lote_aplicar():
         if not f:
             con.close()
             return jsonify({"error": f"la factura {a.get('factura_id')} no es de este cliente"}), 400
-        saldo = round(abs(_n(f["total"])) - _n(f["pagado"]), 2)
+        if (f["tipo"] or "").upper() in TIPOS_NO_IMPUTABLES:
+            con.close()
+            return jsonify({"error": "una nota de crédito no recibe plata del banco: "
+                                     "se aplica como medio de un recibo"}), 400
+        saldo = _saldo_imputable(f) or 0.0
         if _n(a["importe"]) > saldo + 0.01:
             con.close()
             return jsonify({"error": f"a la factura {f['tipo']} {f['numero'] or ''} le faltan "
@@ -1336,10 +1430,16 @@ def api_lote_aplicar():
                                  f"y las facturas son de {direcciones.pop()}"}), 400
 
     total_aplic = round(sum(_n(a["importe"]) for a in aplic), 2)
-    if abs(total_aplic - total_mov) > 0.01:
+    # Con UN movimiento se admite asignar menos: es el depósito que trae plata
+    # de dos clientes, y el resto queda abierto para el otro recibo. Con
+    # varios NO — no habría forma de saber de cuál de ellos sale lo que falta.
+    parcial = len(movs) == 1 and total_aplic < total_mov - 0.01
+    if total_aplic > total_mov + 0.01 or (not parcial and abs(total_aplic - total_mov) > 0.01):
         con.close()
         return jsonify({"error": f"los movimientos suman {total_mov:,.2f} y las facturas "
-                                 f"{total_aplic:,.2f}: tienen que dar igual"}), 400
+                                 f"{total_aplic:,.2f}: tienen que dar igual"
+                                 + ("" if len(movs) == 1 else
+                                    " (con un solo movimiento se puede asignar una parte)")}), 400
 
     entidad_id = entidades.pop()
     cuit = aplic[0]["_f"]["cuit"]
@@ -1352,8 +1452,11 @@ def api_lote_aplicar():
          total_aplic, f"recibo por {len(movs)} movimiento(s) del banco"))
     pago_id = cur.lastrowid
     for m in movs:
+        # La parte de ESTE movimiento que va en este recibo: con un solo
+        # movimiento y asignación parcial es lo aplicado, no lo que falta.
+        parte = total_aplic if parcial else max(m["sin_recibo"], 0)
         con.execute("INSERT INTO pago_medios (pago_id, medio, importe, movimiento_id) "
-                    "VALUES (?,'transferencia',?,?)", (pago_id, abs(_n(m["importe"])), m["id"]))
+                    "VALUES (?,'transferencia',?,?)", (pago_id, round(parte, 2), m["id"]))
         con.execute(
             "INSERT OR REPLACE INTO conciliaciones (cliente_id, movimiento_id, tipo, cheque_id, "
             " factura_id, pago_id, metodo, motivo, fecha) VALUES (?,?,'pago',NULL,NULL,?,'manual',?,?)",
@@ -1362,7 +1465,8 @@ def api_lote_aplicar():
              _hoy()))
         # El banco se nutre: queda con el CUIT y con el número de recibo, que
         # es lo que se pedía — «que el banco termine con transferencia, CUIT,
-        # factura y número de recibo».
+        # factura y número de recibo». `conciliado` = está en al menos un
+        # recibo; si falta una parte, lo dice `estado_banco`, no este tilde.
         con.execute("UPDATE movimientos_banco SET conciliado=1, cuit_contraparte=?, pago_id=? "
                     "WHERE id=?", (cuit, pago_id, m["id"]))
     for a in aplic:
@@ -1371,7 +1475,8 @@ def api_lote_aplicar():
     con.commit()
     con.close()
     return jsonify({"ok": True, "pago_id": pago_id, "total": total_aplic,
-                    "movimientos": len(movs), "facturas": len(aplic)})
+                    "movimientos": len(movs), "facturas": len(aplic),
+                    "queda": round(total_mov - total_aplic, 2) if parcial else 0.0})
 
 
 @app.post("/api/c/movimientos/<int:mid>/clasificar")
@@ -1745,8 +1850,103 @@ def api_movimientos():
     if request.args.get("pendientes"):
         q += " AND m.conciliado=0"
     r = filas(con.execute(q + " ORDER BY m.fecha DESC, m.id DESC LIMIT 500", args))
+    _estado_de_movimientos(con, r)
     con.close()
     return jsonify(r)
+
+
+# ── EN QUÉ ESTADO ESTÁ CADA MOVIMIENTO ──────────────────────────────────────
+# Traído del ERP (commits 457e369 y 450b663, Juan 18/09).
+#
+# ⚠ CONCILIADO NO ES IMPUTADO. Son dos eslabones distintos: banco↔recibo y
+# recibo↔factura, y la columna miraba uno solo. Allá un depósito de
+# $13.600.000 decía «conciliado» con un recibo que imputaba $3.021.500: diez
+# millones y medio a cuenta que ninguna pantalla mostraba. *«ya dice
+# conciliado y no me deja seguir — debería decir conciliado parcial»*.
+#
+# Y LO QUE NO SE CONCILIA NO ES UN PENDIENTE: *«transferencia a cuenta propia
+# no necesita conciliar, hay que poner CUIT nomás y listo»*. Los impuestos,
+# los gastos del banco y los pases entre cuentas propias no tienen una factura
+# del otro lado: mostrarlos «sin registrar» con un tilde es decir que falta
+# algo que no va a existir nunca. En el primer extracto real eran 220 de 435.
+NO_SE_CONCILIAN = ("Impuesto", "Gasto Bancario", "Transferencia interna")
+
+
+def _movimiento_con_estado(con, cid, mid):
+    """El movimiento como dict, con `estado_banco`, `falta_imputar` y `sin_recibo`."""
+    m = con.execute(
+        "SELECT m.*, (SELECT co.tipo FROM conciliaciones co WHERE co.movimiento_id=m.id "
+        "             ORDER BY co.id DESC LIMIT 1) AS conciliado_con "
+        "FROM movimientos_banco m WHERE m.id=? AND m.cliente_id=?", (mid, cid)).fetchone()
+    if not m:
+        return None
+    d = dict(m)
+    _estado_de_movimientos(con, [d])
+    return d
+
+
+def _estado_de_movimientos(con, movs):
+    """Le pone a cada movimiento `estado_banco` y `falta_imputar`.
+
+    Lo imputado se ATRIBUYE: un recibo que cubre tres movimientos y aplica
+    la mitad de su total a facturas, tiene imputada la mitad de cada uno. Así
+    salen bien los cuatro casos — uno a uno, varios a uno, un movimiento
+    repartido entre dos recibos (el depósito que traía plata de dos clientes)
+    y el recibo que cubre el movimiento entero pero imputa una parte."""
+    if not movs:
+        return
+    ids = [m["id"] for m in movs]
+    marcas = ",".join("?" * len(ids))
+    partes = {}        # movimiento → {pago_id: parte del movimiento en ese pago}
+    for x in con.execute(
+            f"SELECT movimiento_id, pago_id, SUM(importe) AS parte FROM pago_medios "
+            f"WHERE movimiento_id IN ({marcas}) GROUP BY 1,2", ids):
+        partes.setdefault(x["movimiento_id"], {})[x["pago_id"]] = _n(x["parte"])
+    importe = {m["id"]: abs(_n(m["importe"])) for m in movs}
+    # La conciliación contra un recibo YA cargado no siempre deja el medio
+    # atado al movimiento: se cuenta el movimiento entero para ese recibo.
+    for x in con.execute(
+            f"SELECT movimiento_id, pago_id FROM conciliaciones "
+            f"WHERE pago_id IS NOT NULL AND movimiento_id IN ({marcas})", ids):
+        d = partes.setdefault(x["movimiento_id"], {})
+        d.setdefault(x["pago_id"], importe[x["movimiento_id"]])
+
+    pagos_ids = sorted({p for d in partes.values() for p in d})
+    razon = {}
+    if pagos_ids:
+        pm = ",".join("?" * len(pagos_ids))
+        for p in con.execute(
+                f"SELECT p.id, p.total, COALESCE(p.anulado,0) AS anulado, "
+                f"  COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a "
+                f"            WHERE a.pago_id=p.id),0) AS aplicado "
+                f"FROM pagos p WHERE p.id IN ({pm})", pagos_ids):
+            t = _n(p["total"])
+            # Un recibo anulado no imputa nada. Uno con retenciones puede
+            # aplicar más que su total —cancela con plata y con retención—:
+            # se tope en 1, porque del banco salió solo el total.
+            razon[p["id"]] = 0.0 if p["anulado"] or t <= 0 else min(1.0, _n(p["aplicado"]) / t)
+
+    for m in movs:
+        if (m.get("rango") or "") in NO_SE_CONCILIAN:
+            m["estado_banco"], m["falta_imputar"] = "no_se_concilia", 0.0
+            continue
+        # Contra un CHEQUE la imputación ya pasó cuando el cheque se entregó
+        # o se recibió en su recibo: el banco solo confirma que se movió.
+        if m.get("conciliado_con") == "cheque":
+            m["estado_banco"], m["falta_imputar"] = "conciliado", 0.0
+            continue
+        imputado = sum(parte * razon.get(pid, 0.0)
+                       for pid, parte in partes.get(m["id"], {}).items())
+        falta = round(importe[m["id"]] - imputado, 2)
+        m["falta_imputar"] = max(falta, 0.0)
+        m["sin_recibo"] = round(importe[m["id"]]
+                                - sum(partes.get(m["id"], {}).values()), 2)
+        if falta <= 0.01:
+            m["estado_banco"] = "conciliado"
+        elif partes.get(m["id"]) or m.get("conciliado"):
+            m["estado_banco"] = "parcial"
+        else:
+            m["estado_banco"] = "pendiente"
 
 
 @app.post("/api/c/movimientos")
@@ -1771,6 +1971,7 @@ def api_movimientos_alta():
         return jsonify({"error": "cuenta inexistente para este cliente"}), 400
 
     nuevos = repetidos = 0
+    ids_nuevos = []
     vistos = {}          # huella -> cuántas veces vino ya EN ESTA TANDA
     for m in lote:
         fecha = (m.get("fecha") or _hoy())[:10]
@@ -1798,12 +1999,20 @@ def api_movimientos_alta():
                  ref or None, m.get("origen") or "manual",
                  re.sub(r"\D", "", m.get("cuit_contraparte") or "") or None,
                  huella, ordinal))
+            ids_nuevos.append(con.execute("SELECT last_insert_rowid()").fetchone()[0])
             nuevos += 1
         except sqlite3.IntegrityError:
             repetidos += 1
+    # ⚠ LAS REGLAS VALEN PARA LO QUE VIENE. La pantalla de reglas lo prometía
+    # —«vale para todo lo que ya entró y para todo lo que venga»— y solo
+    # cumplía la primera mitad: se aplicaban al crear la regla y nunca más.
+    # El extracto del mes siguiente entraba entero sin clasificar, y con él la
+    # recaudación de IIBB SIN TIPAR — o sea, sin descontarse de la DJ.
+    clasificados = _aplicar_reglas(con, cli["id"], movimientos=ids_nuevos)
     con.commit()
     con.close()
-    return jsonify({"ok": True, "nuevos": nuevos, "repetidos": repetidos})
+    return jsonify({"ok": True, "nuevos": nuevos, "repetidos": repetidos,
+                    "clasificados": clasificados})
 
 
 # ══ CHEQUES ═════════════════════════════════════════════════════════════════
@@ -3495,6 +3704,10 @@ def api_pago_agregar_aplicaciones(pid):
         if f["entidad_id"] != p["entidad_id"]:
             con.close()
             return jsonify({"error": "esa factura es de otra entidad: un recibo es de UNA"}), 400
+        if (f["tipo"] or "").upper() in TIPOS_NO_IMPUTABLES:
+            con.close()
+            return jsonify({"error": "una nota de crédito no se cancela con plata: "
+                                     "se usa como medio de pago"}), 400
         if f["mov"] != quiero:
             con.close()
             return jsonify({"error": f"este recibo es un {p['direccion']} y esa factura es "
@@ -3766,7 +3979,8 @@ def _candidatos(con, cid, mov):
             "SELECT f.*, e.cuit, m.razon_social FROM facturas f "
             "JOIN entidades_cliente e ON e.id=f.entidad_id "
             "JOIN maestro_entidades m ON m.cuit=e.cuit "
-            "WHERE f.cliente_id=? AND f.mov=? AND ABS(ABS(f.total) - ?) < 0.01 "
+            "WHERE f.cliente_id=? AND f.mov=? AND f.tipo <> 'NC' "
+            "  AND ABS(ABS(f.total) - ?) < 0.01 "
             "AND COALESCE((SELECT SUM(a.importe) FROM pago_aplicaciones a WHERE a.factura_id=f.id),0) "
             "    < ABS(f.total) - 0.01", (cid, mov_esperado, abs(imp))):
         d = _dias(fecha, f["fecha"])
@@ -3804,8 +4018,14 @@ def _pago_intermedio(con, cid, mov, factura_id):
     aplicado = _n(con.execute(
         "SELECT COALESCE(SUM(importe),0) FROM pago_aplicaciones WHERE factura_id=?",
         (factura_id,)).fetchone()[0])
-    # lo que se aplica es lo menor entre lo que trae el banco y lo que falta
-    importe = min(abs(mov["importe"]), round(abs(f["total"]) - aplicado, 2))
+    # Lo que se aplica es lo menor entre lo que le QUEDA al movimiento y lo
+    # que le falta a la factura. «Lo que le queda», no su importe entero:
+    # desde que un movimiento puede repartirse entre varios recibos (el
+    # depósito con plata de dos clientes), usar el total asignaría de más.
+    ya = _n(con.execute("SELECT COALESCE(SUM(importe),0) FROM pago_medios "
+                        "WHERE movimiento_id=?", (mov["id"],)).fetchone()[0])
+    importe = min(round(abs(mov["importe"]) - ya, 2),
+                  round(abs(f["total"]) - aplicado, 2))
     direccion = "cobro" if f["mov"] == "venta" else "pago"
     cur = con.execute(
         "INSERT INTO pagos (cliente_id, entidad_id, direccion, fecha, numero, total, nota) "
@@ -3952,6 +4172,19 @@ def api_conciliacion_manual():
     # Contra una factura pasa lo mismo que en la automática: hace falta el
     # recibo intermedio, si no la cuenta corriente sigue mostrando la deuda.
     pago_id = obj["id"] if tipo == "pago" else None
+    if tipo == "pago":
+        # El recibo que ya existía queda atado al movimiento por su medio de
+        # banco — si no, la traza banco→recibo→factura se corta en el medio y
+        # el recibo sigue figurando «sin respaldo bancario».
+        med = con.execute(
+            "SELECT id FROM pago_medios WHERE pago_id=? AND movimiento_id IS NULL "
+            "AND cheque_id IS NULL ORDER BY id LIMIT 1", (pago_id,)).fetchone()
+        if med:
+            con.execute("UPDATE pago_medios SET movimiento_id=? WHERE id=?", (mov["id"], med["id"]))
+        cuit = con.execute("SELECT e.cuit FROM pagos p JOIN entidades_cliente e "
+                           "ON e.id=p.entidad_id WHERE p.id=?", (pago_id,)).fetchone()
+        con.execute("UPDATE movimientos_banco SET pago_id=?, cuit_contraparte=COALESCE(?, "
+                    "cuit_contraparte) WHERE id=?", (pago_id, cuit and cuit["cuit"], mov["id"]))
     if tipo == "factura":
         pago_id = _pago_intermedio(con, cli["id"], mov, obj["id"])
     elif tipo == "cheque":
