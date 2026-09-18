@@ -418,6 +418,38 @@ def _migrar(con):
             CREATE INDEX IF NOT EXISTS ix_reglas ON reglas_clasificacion(cliente_id, prioridad);""")
         con.commit()
 
+    # ── un movimiento, varios recibos (18/09) ──
+    viejo = con.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                        "AND name='conciliaciones'").fetchone()
+    if viejo and re.search(r"UNIQUE\s*\(\s*movimiento_id\s*\)", viejo[0] or ""):
+        print("  migrando: un movimiento puede tener un recibo por cliente…")
+        # SQLite no sabe sacarle un UNIQUE a una tabla: se renombra, se crea
+        # la nueva igual pero sin él, se copia y se tira la vieja.
+        con.executescript('''
+            ALTER TABLE conciliaciones RENAME TO conciliaciones_vieja;
+            CREATE TABLE conciliaciones (
+    id            INTEGER PRIMARY KEY,
+    cliente_id    INTEGER NOT NULL REFERENCES clientes(id),
+    movimiento_id INTEGER NOT NULL REFERENCES movimientos_banco(id),
+    tipo          TEXT NOT NULL,               -- cheque | pago | factura
+    cheque_id     INTEGER REFERENCES cheques(id),
+    pago_id       INTEGER REFERENCES pagos(id),
+    factura_id    INTEGER REFERENCES facturas(id),
+    metodo        TEXT NOT NULL,               -- auto | manual
+    motivo        TEXT,                        -- por qué matcheó (auditoría)
+    fecha         TEXT NOT NULL
+            );
+            INSERT INTO conciliaciones (id, cliente_id, movimiento_id, tipo, cheque_id,
+                pago_id, factura_id, metodo, motivo, fecha)
+              SELECT id, cliente_id, movimiento_id, tipo, cheque_id, pago_id, factura_id,
+                     metodo, motivo, fecha FROM conciliaciones_vieja;
+            DROP TABLE conciliaciones_vieja;
+            CREATE INDEX IF NOT EXISTS ix_conc_cliente ON conciliaciones(cliente_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_conc_puerta ON conciliaciones(
+                movimiento_id, COALESCE(pago_id, 0), COALESCE(cheque_id, 0),
+                COALESCE(factura_id, 0));''')
+        con.commit()
+
     # ── el saldo con el que arranca la cuenta ──
     cc = {f[1] for f in con.execute("PRAGMA table_info(cuentas_bancarias)")}
     if "saldo_inicial" not in cc:
@@ -1832,7 +1864,13 @@ def api_movimientos():
     # la pantalla mostraba un campo `recibo` que NUNCA venía: la columna «qué
     # lo explica» decía «—» incluso con el recibo hecho y la factura aplicada.
     q = ("SELECT m.*, c.banco, c.numero AS cuenta_numero, "
-         "  co.tipo AS conciliado_con, co.motivo AS conciliado_motivo, "
+         # ⚠ Subconsultas y no LEFT JOIN: con un recibo por cliente un
+         # movimiento puede tener varias conciliaciones, y el JOIN lo listaba
+         # repetido — un depósito de dos clientes salía dos veces.
+         "  (SELECT co.tipo FROM conciliaciones co WHERE co.movimiento_id=m.id "
+         "    ORDER BY co.id DESC LIMIT 1) AS conciliado_con, "
+         "  (SELECT co.motivo FROM conciliaciones co WHERE co.movimiento_id=m.id "
+         "    ORDER BY co.id DESC LIMIT 1) AS conciliado_motivo, "
          "  p.numero AS recibo, p.total AS recibo_total, "
          "  (SELECT me.razon_social FROM entidades_cliente ec "
          "     JOIN maestro_entidades me ON me.cuit=ec.cuit WHERE ec.id=p.entidad_id) AS contraparte, "
@@ -1841,7 +1879,6 @@ def api_movimientos():
          "     FROM pago_aplicaciones a JOIN facturas f ON f.id=a.factura_id "
          "    WHERE a.pago_id=m.pago_id) AS facturas "
          "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
-         "LEFT JOIN conciliaciones co ON co.movimiento_id=m.id "
          "LEFT JOIN pagos p ON p.id=m.pago_id WHERE m.cliente_id=?")
     args = [cli["id"]]
     if request.args.get("cuenta_id"):
@@ -1872,6 +1909,38 @@ def api_movimientos():
 NO_SE_CONCILIAN = ("Impuesto", "Gasto Bancario", "Transferencia interna")
 
 
+def _recalcular_banco(con, mid, excluir=None):
+    """El movimiento queda conciliado si ALGO lo sigue explicando.
+
+    ⚠ ANTES, desatar un recibo ponía `conciliado=0` y borraba TODAS las
+    conciliaciones del movimiento. Con un recibo por movimiento daba igual;
+    con un depósito repartido entre dos clientes, anular el recibo de uno le
+    desconciliaba el depósito al otro — y su cobro volvía a figurar pendiente
+    sin que nadie lo tocara.
+
+    `excluir` es el recibo que se está soltando: todavía existe en la base
+    cuando se recalcula, y no puede contarse como el que sigue explicando."""
+    otro = con.execute(
+        "SELECT pm.pago_id FROM pago_medios pm JOIN pagos p ON p.id=pm.pago_id "
+        "WHERE pm.movimiento_id=? AND COALESCE(p.anulado,0)=0 AND pm.pago_id<>COALESCE(?,0) "
+        "UNION "
+        "SELECT co.pago_id FROM conciliaciones co JOIN pagos p ON p.id=co.pago_id "
+        "WHERE co.movimiento_id=? AND COALESCE(p.anulado,0)=0 AND co.pago_id<>COALESCE(?,0) "
+        "ORDER BY 1 DESC LIMIT 1", (mid, excluir, mid, excluir)).fetchone()
+    cheque = con.execute("SELECT 1 FROM conciliaciones WHERE movimiento_id=? "
+                         "AND cheque_id IS NOT NULL", (mid,)).fetchone()
+    if otro:
+        cuit = con.execute("SELECT e.cuit FROM pagos p JOIN entidades_cliente e "
+                           "ON e.id=p.entidad_id WHERE p.id=?", (otro[0],)).fetchone()
+        con.execute("UPDATE movimientos_banco SET conciliado=1, pago_id=?, cuit_contraparte=? "
+                    "WHERE id=?", (otro[0], cuit and cuit[0], mid))
+    elif cheque:
+        con.execute("UPDATE movimientos_banco SET conciliado=1, pago_id=NULL WHERE id=?", (mid,))
+    else:
+        con.execute("UPDATE movimientos_banco SET conciliado=0, pago_id=NULL, "
+                    "cuit_contraparte=NULL WHERE id=?", (mid,))
+
+
 def _movimiento_con_estado(con, cid, mid):
     """El movimiento como dict, con `estado_banco`, `falta_imputar` y `sin_recibo`."""
     m = con.execute(
@@ -1898,16 +1967,20 @@ def _estado_de_movimientos(con, movs):
     ids = [m["id"] for m in movs]
     marcas = ",".join("?" * len(ids))
     partes = {}        # movimiento → {pago_id: parte del movimiento en ese pago}
+    # ⚠ Un recibo ANULADO no cubre nada: se conserva por el papel —el número
+    # ya se usó— pero su plata vuelve a estar sin explicar.
     for x in con.execute(
-            f"SELECT movimiento_id, pago_id, SUM(importe) AS parte FROM pago_medios "
-            f"WHERE movimiento_id IN ({marcas}) GROUP BY 1,2", ids):
+            f"SELECT pm.movimiento_id, pm.pago_id, SUM(pm.importe) AS parte FROM pago_medios pm "
+            f"JOIN pagos p ON p.id=pm.pago_id AND COALESCE(p.anulado,0)=0 "
+            f"WHERE pm.movimiento_id IN ({marcas}) GROUP BY 1,2", ids):
         partes.setdefault(x["movimiento_id"], {})[x["pago_id"]] = _n(x["parte"])
     importe = {m["id"]: abs(_n(m["importe"])) for m in movs}
     # La conciliación contra un recibo YA cargado no siempre deja el medio
     # atado al movimiento: se cuenta el movimiento entero para ese recibo.
     for x in con.execute(
-            f"SELECT movimiento_id, pago_id FROM conciliaciones "
-            f"WHERE pago_id IS NOT NULL AND movimiento_id IN ({marcas})", ids):
+            f"SELECT co.movimiento_id, co.pago_id FROM conciliaciones co "
+            f"JOIN pagos p ON p.id=co.pago_id AND COALESCE(p.anulado,0)=0 "
+            f"WHERE co.movimiento_id IN ({marcas})", ids):
         d = partes.setdefault(x["movimiento_id"], {})
         d.setdefault(x["pago_id"], importe[x["movimiento_id"]])
 
@@ -3805,10 +3878,12 @@ def api_pago_anular(pid):
 
     for m in con.execute("SELECT * FROM pago_medios WHERE pago_id=?", (pid,)).fetchall():
         if m["movimiento_id"]:
-            con.execute("UPDATE movimientos_banco SET pago_id=NULL, cuit_contraparte=NULL, "
-                        " conciliado=0 WHERE id=?", (m["movimiento_id"],))
-            con.execute("DELETE FROM conciliaciones WHERE movimiento_id=?", (m["movimiento_id"],))
-            deshecho.append("el movimiento del banco queda sin registrar otra vez")
+            # Solo ESTE recibo se desata: si el movimiento lo comparte con el
+            # recibo de otro cliente, ese sigue en pie.
+            con.execute("DELETE FROM conciliaciones WHERE movimiento_id=? AND pago_id=?",
+                        (m["movimiento_id"], pid))
+            _recalcular_banco(con, m["movimiento_id"], excluir=pid)
+            deshecho.append("el movimiento del banco queda sin este recibo")
         if m["cheque_id"]:
             ch = con.execute("SELECT * FROM cheques WHERE id=?", (m["cheque_id"],)).fetchone()
             if ch and ch["pago_origen_id"] == pid:
@@ -3878,9 +3953,9 @@ def api_pago_editar_medios(pid):
     # Soltar lo viejo
     for m in con.execute("SELECT * FROM pago_medios WHERE pago_id=?", (pid,)).fetchall():
         if m["movimiento_id"]:
-            con.execute("UPDATE movimientos_banco SET pago_id=NULL, cuit_contraparte=NULL, "
-                        " conciliado=0 WHERE id=?", (m["movimiento_id"],))
-            con.execute("DELETE FROM conciliaciones WHERE movimiento_id=?", (m["movimiento_id"],))
+            con.execute("DELETE FROM conciliaciones WHERE movimiento_id=? AND pago_id=?",
+                        (m["movimiento_id"], pid))
+            _recalcular_banco(con, m["movimiento_id"], excluir=pid)
         if m["cheque_id"]:
             ch = con.execute("SELECT * FROM cheques WHERE id=?", (m["cheque_id"],)).fetchone()
             if ch and ch["pago_origen_id"] == pid:
@@ -3918,21 +3993,25 @@ def api_desconciliar(cid_conc):
     if not c:
         con.close()
         return jsonify({"error": "conciliación inexistente para este cliente"}), 404
-    con.execute("UPDATE movimientos_banco SET conciliado=0 WHERE id=?", (c["movimiento_id"],))
     # El recibo que la conciliación fabricó se va con ella: existía solo para
-    # explicar ese movimiento.
+    # explicar ese movimiento. Uno que ya estaba cargado a mano se QUEDA —
+    # es un papel del cliente— y solo se le desata el banco.
     if c["pago_id"]:
         pg = con.execute("SELECT numero FROM pagos WHERE id=?", (c["pago_id"],)).fetchone()
         if pg and (pg["numero"] or "").startswith("AUTO-"):
             con.execute("DELETE FROM pago_aplicaciones WHERE pago_id=?", (c["pago_id"],))
             con.execute("DELETE FROM pago_medios WHERE pago_id=?", (c["pago_id"],))
             con.execute("DELETE FROM pagos WHERE id=?", (c["pago_id"],))
-            con.execute("UPDATE movimientos_banco SET pago_id=NULL, cuit_contraparte=NULL "
-                        "WHERE id=?", (c["movimiento_id"],))
+        else:
+            con.execute("UPDATE pago_medios SET movimiento_id=NULL WHERE pago_id=? "
+                        "AND movimiento_id=?", (c["pago_id"], c["movimiento_id"]))
     if c["cheque_id"]:
         con.execute("UPDATE cheques SET estado='depositado' WHERE id=? AND estado='cobrado'",
                     (c["cheque_id"],))
     con.execute("DELETE FROM conciliaciones WHERE id=?", (cid_conc,))
+    # Y recién ahí se mira si al movimiento le queda algo que lo explique: si
+    # era un depósito repartido, el recibo del otro cliente sigue en pie.
+    _recalcular_banco(con, c["movimiento_id"])
     con.commit()
     con.close()
     return jsonify({"ok": True})
@@ -4022,8 +4101,9 @@ def _pago_intermedio(con, cid, mov, factura_id):
     # que le falta a la factura. «Lo que le queda», no su importe entero:
     # desde que un movimiento puede repartirse entre varios recibos (el
     # depósito con plata de dos clientes), usar el total asignaría de más.
-    ya = _n(con.execute("SELECT COALESCE(SUM(importe),0) FROM pago_medios "
-                        "WHERE movimiento_id=?", (mov["id"],)).fetchone()[0])
+    ya = _n(con.execute("SELECT COALESCE(SUM(pm.importe),0) FROM pago_medios pm "
+                        "JOIN pagos p ON p.id=pm.pago_id AND COALESCE(p.anulado,0)=0 "
+                        "WHERE pm.movimiento_id=?", (mov["id"],)).fetchone()[0])
     importe = min(round(abs(mov["importe"]) - ya, 2),
                   round(abs(f["total"]) - aplicado, 2))
     direccion = "cobro" if f["mov"] == "venta" else "pago"
@@ -4140,7 +4220,8 @@ def api_conciliacion_auto():
                             (cuit, mov["id"]))
         else:
             pago_id = _pago_intermedio(con, cid, mov, oid)
-            con.execute("UPDATE conciliaciones SET pago_id=? WHERE movimiento_id=?", (pago_id, mov["id"]))
+            con.execute("UPDATE conciliaciones SET pago_id=? WHERE movimiento_id=? "
+                        "AND factura_id=? AND pago_id IS NULL", (pago_id, mov["id"], oid))
         hechas.append({"movimiento_id": mov["id"], "tipo": tipo, "id": oid, "motivo": motivo})
     con.commit()
     con.close()
@@ -5550,9 +5631,12 @@ def api_documentos():
             "estado": ch["estado"], "se_aplica_con": "RECIBO", "cadena": cadena})
 
     for mv in con.execute(
-            "SELECT m.*, c.banco, co.tipo AS conc_tipo, co.motivo FROM movimientos_banco m "
-            "JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
-            "LEFT JOIN conciliaciones co ON co.movimiento_id=m.id "
+            "SELECT m.*, c.banco, "
+            "  (SELECT co.tipo FROM conciliaciones co WHERE co.movimiento_id=m.id "
+            "    ORDER BY co.id DESC LIMIT 1) AS conc_tipo, "
+            "  (SELECT co.motivo FROM conciliaciones co WHERE co.movimiento_id=m.id "
+            "    ORDER BY co.id DESC LIMIT 1) AS motivo "
+            "FROM movimientos_banco m JOIN cuentas_bancarias c ON c.id=m.cuenta_id "
             "WHERE m.cliente_id=? ORDER BY m.fecha DESC", (cid,)):
         cadena = []
         if mv["cuit_contraparte"]:

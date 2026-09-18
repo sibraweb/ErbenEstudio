@@ -126,12 +126,17 @@ JOBS = {
         "desc": "Movimientos, tarjeta y echeqs.",
         "args": [],
     },
+    # ⚠ Era el script de SIBRA a pelo, y escribía los extractos del cliente en
+    # NUESTRO Drive. Ahora es propio: usa el login y la descarga prestados,
+    # pero guarda en la carpeta del cliente y carga cada PDF en su cuenta.
     "formosa_banco": {
-        "archivo": "formosa_resumenes.py", "propio": False,
-        "titulo": "Banco de Formosa — resúmenes",
-        "rubro": "bancos", "fuente": "banco", "atendido": True,
-        "desc": "Resúmenes mensuales y movimientos en XLS.",
-        "args": [],
+        "archivo": "banco_formosa.py", "propio": True,
+        "titulo": "Banco de Formosa — bajar y cargar resúmenes",
+        "rubro": "bancos", "fuente": None, "atendido": True,
+        "desc": "Entrás vos al home banking; baja los resúmenes PDF a la carpeta "
+                "del cliente y los carga cada uno en la cuenta que dice su "
+                "encabezado. Si no hay login, --solo-cargar carga lo que ya está.",
+        "args": ["--alias", "--meses"],
     },
 }
 

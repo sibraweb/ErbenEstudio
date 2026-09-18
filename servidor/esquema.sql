@@ -420,10 +420,18 @@ CREATE TABLE conciliaciones (
     factura_id    INTEGER REFERENCES facturas(id),
     metodo        TEXT NOT NULL,               -- auto | manual
     motivo        TEXT,                        -- por qué matcheó (auditoría)
-    fecha         TEXT NOT NULL,
-    UNIQUE (movimiento_id)
+    fecha         TEXT NOT NULL
 );
 CREATE INDEX ix_conc_cliente ON conciliaciones(cliente_id);
+-- ⚠ UN MOVIMIENTO PUEDE TENER VARIOS RECIBOS: uno por cliente. Era
+-- UNIQUE(movimiento_id) y un depósito con plata de dos clientes no entraba —
+-- el segundo recibo PISABA la conciliación del primero. Lo que no puede
+-- repetirse es la misma puerta dos veces: el mismo recibo, o el mismo cheque,
+-- o la misma factura, contra el mismo movimiento. Los COALESCE van porque en
+-- SQLite dos NULL no chocan en un UNIQUE, y conciliar un cheque dos veces
+-- dejaría dos filas. Mismo cambio que el ERP el 18/09.
+CREATE UNIQUE INDEX ux_conc_puerta ON conciliaciones(
+    movimiento_id, COALESCE(pago_id, 0), COALESCE(cheque_id, 0), COALESCE(factura_id, 0));
 
 -- ══ 9. IMPUESTOS ════════════════════════════════════════════════════════════
 -- Vencimientos (ARCA y las provincias). Los cargan los jobs
